@@ -303,3 +303,110 @@ export function buildCombatLog(
 
   return log
 }
+
+// ─── Log de turno multi-enemigo ───────────────────────────────────────────────
+
+export interface TurnLogInput {
+  playerName: string
+  action: 'attack' | 'skill' | 'block' | 'item'
+  skillName?: string
+  skillUsed?: { name: string }
+  targetName: string
+  playerDamage: DamageResult
+  enemyCount: number          // cantidad de enemigos vivos
+  passiveLog: string[]
+  burnLog: string[]
+  newBurnApplied: boolean
+  burnTargetName: string
+}
+
+export function buildTurnLog(input: TurnLogInput): {
+  attackLog: string[]
+  shouldPrepend: boolean   // true = unshift (múltiples enemigos), false = push (1 enemigo)
+} {
+  const { playerName, action, targetName, playerDamage, enemyCount } = input
+  const critText = playerDamage.isOvercrit ? ' ⚡⚡ OVERCRIT!' : playerDamage.isCritical ? ' ⚡ CRÍTICO!' : ''
+
+  const attackLog: string[] = []
+
+  if (action === 'block') {
+    attackLog.push(`🛡️ ${playerName} toma posición defensiva!`)
+  } else if (action === 'skill' && input.skillName) {
+    attackLog.push(`✨ ${playerName} usa ${input.skillName} en ${targetName} por ${playerDamage.damage} de daño!${critText}`)
+  } else if (action === 'attack') {
+    attackLog.push(`⚔️ ${playerName} ataca a ${targetName} por ${playerDamage.damage} de daño!${critText}`)
+  }
+
+  if (input.newBurnApplied) {
+    attackLog.push(`🔥 ¡${input.burnTargetName} está en llamas! Sufrirá daño por 3 turnos.`)
+  }
+
+  return {
+    attackLog: [...attackLog, ...input.passiveLog, ...input.burnLog],
+    shouldPrepend: enemyCount > 1,
+  }
+}
+
+// ─── Aplicar resultados de weapon passive al mapa de HPs ────────────────────
+
+export interface ApplyPassiveInput {
+  passive: WeaponPassiveResult
+  target: { instanceId: number }
+  liveEnemies: { instanceId: number; name: string; alive: boolean }[]
+  updatedEnemyHPs: Record<number, number>
+  defeatedEnemyInstanceIds: number[]
+  stunnedEnemyIds: number[]
+}
+
+export interface ApplyPassiveOutput {
+  updatedEnemyHPs: Record<number, number>
+  defeatedEnemyInstanceIds: number[]
+  newStunnedEnemyIds: number[]
+  defeatLog: string[]
+}
+
+export function applyWeaponPassiveResults(input: ApplyPassiveInput): ApplyPassiveOutput {
+  const { passive, target, liveEnemies } = input
+  const updatedEnemyHPs = { ...input.updatedEnemyHPs }
+  const defeatedEnemyInstanceIds = [...input.defeatedEnemyInstanceIds]
+  const newStunnedEnemyIds = [...input.stunnedEnemyIds]
+  const defeatLog: string[] = []
+
+  // Espada: splash a adyacentes
+  for (const [idStr, dmg] of Object.entries(passive.splashDamage)) {
+    const id = Number(idStr)
+    if (updatedEnemyHPs[id] !== undefined) {
+      updatedEnemyHPs[id] = Math.max(0, updatedEnemyHPs[id] - dmg)
+    }
+  }
+
+  // Hacha: ejecución
+  if (passive.executed) {
+    updatedEnemyHPs[target.instanceId] = 0
+  }
+
+  // Martillo: stun
+  if (passive.stunned) {
+    newStunnedEnemyIds.push(target.instanceId)
+  }
+
+  // Lanza: segundo ataque
+  if (passive.secondAttackDamage > 0) {
+    const secondTargetId = updatedEnemyHPs[target.instanceId] <= 0
+      ? liveEnemies.find(e => e.instanceId !== target.instanceId)?.instanceId
+      : target.instanceId
+    if (secondTargetId !== undefined && updatedEnemyHPs[secondTargetId] !== undefined) {
+      updatedEnemyHPs[secondTargetId] = Math.max(0, updatedEnemyHPs[secondTargetId] - passive.secondAttackDamage)
+    }
+  }
+
+  // Registrar nuevos derrotados
+  for (const e of liveEnemies) {
+    if (updatedEnemyHPs[e.instanceId] <= 0 && !defeatedEnemyInstanceIds.includes(e.instanceId)) {
+      defeatedEnemyInstanceIds.push(e.instanceId)
+      defeatLog.push(`🏆 ¡Derrotaste a ${e.name}!`)
+    }
+  }
+
+  return { updatedEnemyHPs, defeatedEnemyInstanceIds, newStunnedEnemyIds, defeatLog }
+}

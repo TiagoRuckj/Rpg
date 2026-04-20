@@ -73,6 +73,7 @@ export interface Player {
   equipped_class: string
   unlocked_skills: string[]
   equipped_skills: string[]
+  current_hp: number
   created_at: string
 }
 
@@ -140,6 +141,7 @@ export interface Dungeon {
 
 export interface BossStats {
   hp: number   // usado como max_hp — el HP actual se maneja en el store
+  max_hp?: number
   attack: number
   defense: number
 }
@@ -239,6 +241,14 @@ export interface PlayerSkill {
   ignores_defense?: boolean
   // El daño no recibe bonus de ataque de clase
   ignores_class_bonus?: boolean
+  burn_chance?: number   // probabilidad de aplicar quemadura (0-1)
+}
+
+// ─── Efectos de estado del jugador ───────────────────────────────────────────
+
+export interface PlayerPoisonState {
+  turnsLeft: number   // turnos restantes (5 al aplicar)
+  damagePerTurn: number  // daño por turno (10)
 }
 
 // ─── Eventos de sala intermedia ──────────────────────────────────────────────
@@ -299,6 +309,8 @@ export interface RunState {
   bossDefeated: boolean
   depth: number
   currentEvent: RoomEvent | null
+  poisonState: PlayerPoisonState | null
+  statusEffects: import('@/lib/game/statusEffects').StatusEffect[]
 }
 
 // ─── Profundidad post-boss ────────────────────────────────────────────────────

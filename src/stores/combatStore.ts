@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy, BurnState, RoomEvent } from '@/types/game'
+import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy, BurnState, RoomEvent, PlayerPoisonState } from '@/types/game'
+import { StatusEffect, applyBurn, applyPoison, toBurnStates, toPlayerPoisonState } from '@/lib/game/statusEffects'
 
 interface CombatStore extends CombatState {
   // Run state
@@ -29,6 +30,11 @@ interface CombatStore extends CombatState {
   setBurnStates: (states: BurnState[]) => void
   setCurrentEvent: (event: RoomEvent | null) => void
   setTargetIndex: (index: number) => void
+  setPoisonState: (state: PlayerPoisonState | null) => void
+  // Nuevo sistema unificado
+  setStatusEffects: (effects: StatusEffect[]) => void
+  applyBurnEffect: (instanceId: number) => void
+  applyPoisonEffect: (damagePerTurn?: number, turnsLeft?: number) => void
 
   // Run actions
   initRun: (totalRooms: number) => void
@@ -62,6 +68,8 @@ const initialRunState: RunState = {
   bossDefeated: false,
   depth: 0,
   currentEvent: null,
+  poisonState: null,
+  statusEffects: [],
 }
 
 export const useCombatStore = create<CombatStore>((set) => ({
@@ -112,6 +120,37 @@ export const useCombatStore = create<CombatStore>((set) => ({
   setStunnedEnemyIds: (ids) => set({ stunnedEnemyIds: ids }),
   setBurnStates: (states) => set({ burnStates: states }),
   setCurrentEvent: (event) => set((state) => ({ run: { ...state.run, currentEvent: event } })),
+  setPoisonState: (poisonState) => set((state) => ({ run: { ...state.run, poisonState } })),
+
+  // Nuevo sistema unificado de status effects
+  setStatusEffects: (effects) => set((state) => ({
+    run: {
+      ...state.run,
+      statusEffects: effects,
+      // Mantener campos legacy sincronizados durante la migración
+      poisonState: toPlayerPoisonState(effects),
+    },
+  })),
+  applyBurnEffect: (instanceId) => set((state) => {
+    const updated = applyBurn(instanceId, state.run.statusEffects)
+    return {
+      run: {
+        ...state.run,
+        statusEffects: updated,
+        burnStates: toBurnStates(updated),
+      },
+    }
+  }),
+  applyPoisonEffect: (damagePerTurn = 10, turnsLeft = 5) => set((state) => {
+    const updated = applyPoison(state.run.statusEffects, damagePerTurn, turnsLeft)
+    return {
+      run: {
+        ...state.run,
+        statusEffects: updated,
+        poisonState: toPlayerPoisonState(updated),
+      },
+    }
+  }),
   reset: () => set({ ...initialCombatState, run: initialRunState, consecutiveBlocks: 0, stunnedEnemyIds: [], burnStates: [] }),
 
   setTargetIndex: (index) => set((state) => ({

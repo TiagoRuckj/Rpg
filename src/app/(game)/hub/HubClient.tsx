@@ -255,7 +255,7 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
                 }`}
               >
                 <img
-                  src="/sprites/npc/altar.png"
+                  src="/sprites/npc/altar.gif"
                   alt="Altar"
                   className="w-20 h-20 object-contain"
                   style={{ imageRendering: 'pixelated' }}

@@ -5,13 +5,19 @@ import {
   CombatAction, PlayerStats, BossStats, PlayerSkill,
   PrimaryStats, Item, ItemEffect, EquippedGear, EMPTY_GEAR, WeaponType, BurnState,
   EnemyType, GameClass, ClassBonuses, calcClassBonuses,
-  deriveStatsWithGear, EnemyCombatState,
+  deriveStatsWithGear, EnemyCombatState, PlayerPoisonState,
 } from '@/types/game'
+import {
+  StatusEffect, processStatusEffects, applyBurn, fromLegacy,
+  toBurnStates, toPlayerPoisonState,
+} from '@/lib/game/statusEffects'
 import {
   resolvePlayerAttack,
   resolveEnemyAttack,
   resolveWeaponPassive,
   buildCombatLog,
+  buildTurnLog,
+  applyWeaponPassiveResults,
 } from '@/lib/game/combat'
 
 export interface EnemyTurnState {
@@ -43,8 +49,10 @@ interface TakeTurnInput {
   targetIndex: number
   isBlocking: boolean
   consecutiveBlocks: number
-  stunnedEnemyIds: number[]   // enemigos stunneados el turno anterior (no atacan)
-  burnStates: BurnState[]      // estado de quemadura activo
+  stunnedEnemyIds: number[]
+  burnStates: BurnState[]       // legacy — se convierte internamente
+  poisonState: PlayerPoisonState | null  // legacy — se convierte internamente
+  statusEffects?: StatusEffect[]         // nuevo sistema (tiene prioridad si está presente)
 }
 
 interface TakeTurnResult {
@@ -58,8 +66,10 @@ interface TakeTurnResult {
   defeatedEnemyInstanceIds: number[]
   allEnemiesDefeated: boolean
   newConsecutiveBlocks: number
-  newStunnedEnemyIds: number[]   // stunneados este turno (para el siguiente)
-  newBurnStates: BurnState[]      // quemaduras actualizadas
+  newStunnedEnemyIds: number[]
+  newBurnStates: BurnState[]           // legacy
+  newPoisonState: PlayerPoisonState | null  // legacy
+  newStatusEffects: StatusEffect[]          // nuevo sistema
   log: string[]
 }
 
@@ -77,6 +87,8 @@ function errorResult(input: TakeTurnInput, error: string, logMsg?: string): Take
     newConsecutiveBlocks: input.consecutiveBlocks,
     newStunnedEnemyIds: [],
     newBurnStates: [],
+    newPoisonState: input.poisonState,
+    newStatusEffects: input.statusEffects ?? fromLegacy(input.burnStates, input.poisonState),
     log: logMsg ? [logMsg] : [],
   }
 }
@@ -88,7 +100,7 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
 
   const { data: player } = await supabase
     .from('players')
-    .select('name, primary_stats')
+    .select('name, primary_stats, equipped_classes')
     .eq('id', user.id)
     .single()
   if (!player) return errorResult(input, 'Jugador no encontrado')
@@ -128,14 +140,7 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
   const weaponType: WeaponType = (gear.weapon?.stats?.weapon_type ?? 'none') as WeaponType
   const staffAttackBonus = weaponType === 'staff' ? (gear.weapon?.stats?.attack ?? 0) : 0
 
-  // Leer clases equipadas
-  const { data: playerFull } = await supabase
-    .from('players')
-    .select('equipped_classes')
-    .eq('id', user.id)
-    .single()
-
-  const equippedClassIds: string[] = playerFull?.equipped_classes ?? []
+  const equippedClassIds: string[] = player.equipped_classes ?? []
   let classBonuses: ClassBonuses = {}
 
   if (equippedClassIds.length > 0) {
@@ -287,18 +292,12 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
 
   // ── Passives de arma ──────────────────────────────────────────────────────
   const newStunnedEnemyIds: number[] = []
-  let executedTarget = false
   let passiveLog: string[] = []
 
   if ((input.action === 'attack' || input.action === 'skill') && weaponType !== 'none') {
     const adjacentEnemies = liveEnemies
       .filter(e => e.instanceId !== target.instanceId)
-      .map(e => ({
-        instanceId: e.instanceId,
-        name: e.name,
-        currentHP: e.currentHP,
-        defense: e.defense,
-      }))
+      .map(e => ({ instanceId: e.instanceId, name: e.name, currentHP: e.currentHP, defense: e.defense }))
 
     const passive = resolveWeaponPassive(
       weaponType,
@@ -316,99 +315,95 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
       staffAttackBonus,
     )
 
-    passiveLog = [...passive.log]
+    passiveLog = passive.log
 
-    // Espada: aplicar splash a adyacentes
-    for (const [idStr, dmg] of Object.entries(passive.splashDamage)) {
-      const instId = Number(idStr)
-      if (updatedEnemyHPs[instId] !== undefined) {
-        updatedEnemyHPs[instId] = Math.max(0, updatedEnemyHPs[instId] - dmg)
-      }
-    }
+    const passiveResult = applyWeaponPassiveResults({
+      passive,
+      target,
+      liveEnemies,
+      updatedEnemyHPs,
+      defeatedEnemyInstanceIds,
+      stunnedEnemyIds: newStunnedEnemyIds,
+    })
 
-    // Hacha: ejecución
-    if (passive.executed) {
-      executedTarget = true
-      updatedEnemyHPs[target.instanceId] = 0
-    }
+    Object.assign(updatedEnemyHPs, passiveResult.updatedEnemyHPs)
+    defeatedEnemyInstanceIds.length = 0
+    defeatedEnemyInstanceIds.push(...passiveResult.defeatedEnemyInstanceIds)
+    newStunnedEnemyIds.push(...passiveResult.newStunnedEnemyIds.filter(id => !newStunnedEnemyIds.includes(id)))
+    passiveResult.defeatLog.forEach(msg => log.push(msg))
+  }
 
-    // Martillo: stun
-    if (passive.stunned) {
-      newStunnedEnemyIds.push(target.instanceId)
-    }
+  // ── Status effects activos — procesar burn y poison ──────────────────────
+  // Usar el nuevo sistema si se pasó statusEffects, sino convertir desde legacy
+  const activeEffects: StatusEffect[] = input.statusEffects
+    ?? fromLegacy(input.burnStates, input.poisonState)
 
-    // Lanza: segundo ataque
-    if (passive.secondAttackDamage > 0) {
-      // Si el objetivo principal ya cayó (ejecutado o muerto), atacar al siguiente vivo
-      const secondTargetId = updatedEnemyHPs[target.instanceId] <= 0
-        ? liveEnemies.find(e => e.instanceId !== target.instanceId)?.instanceId
-        : target.instanceId
-      if (secondTargetId !== undefined && updatedEnemyHPs[secondTargetId] !== undefined) {
-        updatedEnemyHPs[secondTargetId] = Math.max(0, updatedEnemyHPs[secondTargetId] - passive.secondAttackDamage)
-      }
-    }
+  const enemyNames: Record<number, string> = {}
+  for (const e of liveEnemies) enemyNames[e.instanceId] = e.name
 
-    // Registrar nuevos derrotados por passives
-    for (const e of liveEnemies) {
-      if (updatedEnemyHPs[e.instanceId] <= 0 && !defeatedEnemyInstanceIds.includes(e.instanceId)) {
-        defeatedEnemyInstanceIds.push(e.instanceId)
-        log.push(`🏆 ¡Derrotaste a ${e.name}!`)
-      }
+  const effectsResult = processStatusEffects(activeEffects, updatedEnemyHPs, enemyNames)
+
+  // Aplicar deltas de HP de enemigos
+  for (const [idStr, delta] of Object.entries(effectsResult.enemyHPDeltas)) {
+    const id = Number(idStr)
+    updatedEnemyHPs[id] = Math.max(0, (updatedEnemyHPs[id] ?? 0) + delta)
+    if (updatedEnemyHPs[id] <= 0 && !defeatedEnemyInstanceIds.includes(id)) {
+      defeatedEnemyInstanceIds.push(id)
+      effectsResult.log.push(`🏆 ¡Derrotaste a ${enemyNames[id]}!`)
     }
   }
 
-  // ── Quemadura activa — aplicar daño, log se agrega después del ataque del jugador
-  let newBurnStates: BurnState[] = []
-  const burnLog: string[] = []
-  for (const burn of input.burnStates) {
-    const enemy = liveEnemies.find(e => e.instanceId === burn.instanceId)
-    if (!enemy) continue
-    const burnDmg = Math.max(1, Math.round(updatedEnemyHPs[burn.instanceId] * 0.05))
-    updatedEnemyHPs[burn.instanceId] = Math.max(0, updatedEnemyHPs[burn.instanceId] - burnDmg)
-    burnLog.push(`🔥 ${enemy.name} sufre ${burnDmg} de daño por quemadura! (${burn.turnsLeft} turno${burn.turnsLeft !== 1 ? 's' : ''} restante${burn.turnsLeft !== 1 ? 's' : ''})`)
-    if (updatedEnemyHPs[burn.instanceId] <= 0 && !defeatedEnemyInstanceIds.includes(burn.instanceId)) {
-      defeatedEnemyInstanceIds.push(burn.instanceId)
-      burnLog.push(`🏆 ¡Derrotaste a ${enemy.name}!`)
-    }
-    if (burn.turnsLeft > 1) newBurnStates.push({ instanceId: burn.instanceId, turnsLeft: burn.turnsLeft - 1 })
-  }
+  let newStatusEffects = effectsResult.updatedEffects
+  const burnLog = effectsResult.log
 
   // ── Aplicar nueva quemadura si la skill tiene burn_chance ─────────────────
   let newBurnApplied = false
   if (input.action === 'skill' && input.skillUsed?.burn_chance && playerDamageResult.damage > 0) {
-    const alreadyBurning = newBurnStates.some(b => b.instanceId === target.instanceId)
+    const alreadyBurning = newStatusEffects.some(
+      e => e.type === 'burn' && e.instanceId === target.instanceId
+    )
     if (!alreadyBurning && Math.random() < input.skillUsed.burn_chance) {
-      newBurnStates.push({ instanceId: target.instanceId, turnsLeft: 3 })
+      newStatusEffects = applyBurn(target.instanceId, newStatusEffects)
       newBurnApplied = true
     }
   }
 
+  // Mantener campos legacy sincronizados
+  const newBurnStates: BurnState[] = toBurnStates(newStatusEffects)
+
   // ── Contraataque de cada enemigo vivo ─────────────────────────────────────
-  // Al usar ítem, el jugador no bloquea ni ataca — recibe daño normal
   const isBlockingThisTurn = input.action === 'block'
   let currentPlayerHP = newPlayerHP_fromItem
   let blockFailed = false
 
-  // Log del ataque del jugador para 1 enemigo (independiente del contraataque)
-  if (liveEnemies.length === 1 && input.action !== 'item') {
-    const singleEnemy = liveEnemies[0]
-    const critText = playerDamageResult.isOvercrit ? ' ⚡⚡ OVERCRIT!' : playerDamageResult.isCritical ? ' ⚡ CRÍTICO!' : ''
-    if (actionType === 'block') {
-      log.push(`🛡️ ${player.name} toma posición defensiva!`)
-    } else if (actionType === 'skill' && input.skillUsed) {
-      log.push(`✨ ${player.name} usa ${input.skillUsed.name} en ${singleEnemy.name} por ${playerDamageResult.damage} de daño!${critText}`)
+  // ── Log del turno del jugador ─────────────────────────────────────────────
+  if (input.action !== 'item') {
+    const { attackLog, shouldPrepend } = buildTurnLog({
+      playerName: player.name,
+      action: actionType as 'attack' | 'skill' | 'block' | 'item',
+      skillName: input.skillUsed?.name,
+      targetName: target.name,
+      playerDamage: playerDamageResult,
+      enemyCount: liveEnemies.length,
+      passiveLog,
+      burnLog,
+      newBurnApplied,
+      burnTargetName: target.name,
+    })
+    if (shouldPrepend) {
+      log.unshift(...attackLog)
     } else {
-      log.push(`⚔️ ${player.name} ataca a ${singleEnemy.name} por ${playerDamageResult.damage} de daño!${critText}`)
+      log.push(...attackLog)
     }
-    log.push(...passiveLog)
-    if (newBurnApplied) log.push(`🔥 ¡${target.name} está en llamas! Sufrirá daño por 3 turnos.`)
-    log.push(...burnLog)
   }
 
   for (const enemy of liveEnemies) {
-    // Martillo: enemigo stunneado el turno anterior no ataca
-    if (input.stunnedEnemyIds.includes(enemy.instanceId)) {
-      log.push(`🔨 ${enemy.name} está aturdido y no puede atacar!`)
+    const stunnedThisTurn = newStunnedEnemyIds.includes(enemy.instanceId)
+    const stunnedPrevTurn = input.stunnedEnemyIds.includes(enemy.instanceId)
+
+    if (stunnedThisTurn || stunnedPrevTurn) {
+      // El passive ya logueó el mensaje si fue stunneado este turno
+      if (stunnedPrevTurn && !stunnedThisTurn) log.push(`🔨 ${enemy.name} está aturdido y no puede atacar!`)
       continue
     }
     // Dummy/entrenamiento: enemigo con attack 0 no contraataca
@@ -456,22 +451,9 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
     }
   }
 
-  // Log del ataque del jugador al frente cuando hay múltiples enemigos
-  if (liveEnemies.length > 1 && input.action !== 'item') {
-    const attackLog: string[] = []
-    if (actionType === 'block') {
-      attackLog.push(`🛡️ ${player.name} toma posición defensiva!`)
-    } else if (actionType === 'skill' && input.skillUsed) {
-      const critText = playerDamageResult.isOvercrit ? ' ⚡⚡ OVERCRIT!' : playerDamageResult.isCritical ? ' ⚡ CRÍTICO!' : ''
-      attackLog.push(`✨ ${player.name} usa ${input.skillUsed.name} en ${target.name} por ${playerDamageResult.damage} de daño!${critText}`)
-    } else {
-      const critText = playerDamageResult.isOvercrit ? ' ⚡⚡ OVERCRIT!' : playerDamageResult.isCritical ? ' ⚡ CRÍTICO!' : ''
-      attackLog.push(`⚔️ ${player.name} ataca a ${target.name} por ${playerDamageResult.damage} de daño!${critText}`)
-    }
-    log.unshift(...attackLog)
-    log.push(...passiveLog)
-    if (newBurnApplied) log.push(`🔥 ¡${target.name} está en llamas! Sufrirá daño por 3 turnos.`)
-    log.push(...burnLog)
+  // ── Veneno — ya procesado en effectsResult.playerHPDelta ─────────────────
+  if (effectsResult.playerHPDelta < 0) {
+    currentPlayerHP = Math.max(1, currentPlayerHP + effectsResult.playerHPDelta)
   }
 
   // ── Resultados ────────────────────────────────────────────────────────────
@@ -497,6 +479,8 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
     newConsecutiveBlocks,
     newStunnedEnemyIds,
     newBurnStates,
+    newPoisonState: toPlayerPoisonState(newStatusEffects),
+    newStatusEffects,
     log,
   }
 }
