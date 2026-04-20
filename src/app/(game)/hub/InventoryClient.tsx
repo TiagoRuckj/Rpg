@@ -5,6 +5,7 @@ import { Player, Item, InventoryEntry, EquippedGear, ArmorSlot, deriveStatsWithG
 import { equipItemAction } from '@/actions/shopActions'
 import { useConsumableAction } from '@/actions/consumableAction'
 import ItemIcon from './ItemIcon'
+import { useToast, ToastContainer } from './Toast'
 
 interface Props {
   player: Player
@@ -89,15 +90,12 @@ export default function InventoryClient({ player, inventory: initialInventory, o
   const [tab, setTab] = useState<Tab>('weapons')
   const [loading, setLoading] = useState<number | null>(null)
   const [usingConsumable, setUsingConsumable] = useState<number | null>(null)
-  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
+  const { toasts, addToast } = useToast()
 
   const gear = buildEquippedGear(inventory)
   const derived = deriveStatsWithGear(player.primary_stats, gear)
 
-  function showMsg(text: string, type: 'success' | 'error') {
-    setMessage({ text, type })
-    setTimeout(() => setMessage(null), 3000)
-  }
+
 
   async function handleUseConsumable(entry: InventoryEntry) {
     if (!entry.item || entry.item.type !== 'consumable') return
@@ -106,7 +104,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
     const result = await useConsumableAction(entry.id)
 
     if (!result.success) {
-      showMsg(result.error ?? 'Error al usar el item', 'error')
+      addToast(result.error ?? 'Error al usar el item', 'error')
       setUsingConsumable(null)
       return
     }
@@ -118,7 +116,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
 
     setInventory(updatedInventory)
     onInventoryUpdate(updatedInventory)
-    showMsg(result.message ?? '✅ Item usado', 'success')
+    addToast(result.message ?? '✅ Item usado', 'success')
     setUsingConsumable(null)
   }
 
@@ -133,7 +131,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
     )
 
     if (!result.success) {
-      showMsg(result.error ?? 'Error al equipar', 'error')
+      addToast(result.error ?? 'Error al equipar', 'error')
       setLoading(null)
       return
     }
@@ -159,15 +157,15 @@ export default function InventoryClient({ player, inventory: initialInventory, o
 
     setInventory(updatedInventory)
     onInventoryUpdate(updatedInventory)
-    showMsg(isEquipping ? `✅ ${entry.item.name} equipado` : `${entry.item.name} desequipado`, 'success')
+    addToast(isEquipping ? `✅ ${entry.item.name} equipado` : `${entry.item.name} desequipado`, 'success')
     setLoading(null)
   }
 
   const tabItems = filterByTab(inventory, tab)
 
   return (
-    <div className="min-h-screen bg-black flex justify-center">
-      <div className="w-full min-h-screen bg-gray-900 text-white max-w-5xl">
+    <div className="h-screen bg-gray-950 flex justify-center overflow-hidden">
+      <div className="w-full h-screen bg-gray-950 text-white max-w-5xl flex flex-col overflow-hidden">
 
         {/* Header */}
         <div className="flex items-center gap-4 p-4 border-b border-gray-800">
@@ -175,20 +173,13 @@ export default function InventoryClient({ player, inventory: initialInventory, o
           <h1 className="text-xl font-bold text-yellow-500">🎒 Inventario</h1>
         </div>
 
-        {/* Mensaje */}
-        {message && (
-          <div className={`mx-4 mt-3 rounded-lg p-3 text-center text-sm font-bold ${
-            message.type === 'success' ? 'bg-green-900 text-green-400' : 'bg-red-900 text-red-400'
-          }`}>
-            {message.text}
-          </div>
-        )}
+        <ToastContainer toasts={toasts} />
 
         {/* Layout principal: 1 col equipado + 3 cols inventario */}
-        <div className="flex h-full">
+        <div className="flex flex-1 overflow-hidden">
 
           {/* ── Columna izquierda: equipado ── */}
-          <div className="w-1/4 min-h-screen border-r border-gray-800 p-4 flex flex-col gap-3">
+          <div className="w-1/4 border-r border-gray-800 p-4 flex flex-col gap-3 overflow-y-auto">
             <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-1">Equipado</h2>
 
             {/* Stats derivados */}
@@ -226,7 +217,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
           </div>
 
           {/* ── 3 columnas derecha: inventario ── */}
-          <div className="flex-1 p-4 flex flex-col gap-4">
+          <div className="flex-1 p-4 flex flex-col gap-4 overflow-y-auto">
 
             {/* Tabs */}
             <div className="flex gap-1 flex-wrap">

@@ -3,7 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import {
   CombatAction, PlayerStats, BossStats, PlayerSkill,
-  PrimaryStats, Item, ItemEffect, EquippedGear, EMPTY_GEAR, WeaponType,
+  PrimaryStats, Item, ItemEffect, EquippedGear, EMPTY_GEAR, WeaponType, BurnState,
   EnemyType, GameClass, ClassBonuses, calcClassBonuses,
   deriveStatsWithGear, EnemyCombatState,
 } from '@/types/game'
@@ -44,6 +44,7 @@ interface TakeTurnInput {
   isBlocking: boolean
   consecutiveBlocks: number
   stunnedEnemyIds: number[]   // enemigos stunneados el turno anterior (no atacan)
+  burnStates: BurnState[]      // estado de quemadura activo
 }
 
 interface TakeTurnResult {
@@ -58,6 +59,7 @@ interface TakeTurnResult {
   allEnemiesDefeated: boolean
   newConsecutiveBlocks: number
   newStunnedEnemyIds: number[]   // stunneados este turno (para el siguiente)
+  newBurnStates: BurnState[]      // quemaduras actualizadas
   log: string[]
 }
 
@@ -74,6 +76,7 @@ function errorResult(input: TakeTurnInput, error: string, logMsg?: string): Take
     allEnemiesDefeated: false,
     newConsecutiveBlocks: input.consecutiveBlocks,
     newStunnedEnemyIds: [],
+    newBurnStates: [],
     log: logMsg ? [logMsg] : [],
   }
 }
@@ -285,6 +288,7 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
   // ── Passives de arma ──────────────────────────────────────────────────────
   const newStunnedEnemyIds: number[] = []
   let executedTarget = false
+  let passiveLog: string[] = []
 
   if ((input.action === 'attack' || input.action === 'skill') && weaponType !== 'none') {
     const adjacentEnemies = liveEnemies
@@ -312,7 +316,7 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
       staffAttackBonus,
     )
 
-    log.push(...passive.log)
+    passiveLog = [...passive.log]
 
     // Espada: aplicar splash a adyacentes
     for (const [idStr, dmg] of Object.entries(passive.splashDamage)) {
@@ -353,11 +357,53 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
     }
   }
 
+  // ── Quemadura activa — aplicar daño, log se agrega después del ataque del jugador
+  let newBurnStates: BurnState[] = []
+  const burnLog: string[] = []
+  for (const burn of input.burnStates) {
+    const enemy = liveEnemies.find(e => e.instanceId === burn.instanceId)
+    if (!enemy) continue
+    const burnDmg = Math.max(1, Math.round(updatedEnemyHPs[burn.instanceId] * 0.05))
+    updatedEnemyHPs[burn.instanceId] = Math.max(0, updatedEnemyHPs[burn.instanceId] - burnDmg)
+    burnLog.push(`🔥 ${enemy.name} sufre ${burnDmg} de daño por quemadura! (${burn.turnsLeft} turno${burn.turnsLeft !== 1 ? 's' : ''} restante${burn.turnsLeft !== 1 ? 's' : ''})`)
+    if (updatedEnemyHPs[burn.instanceId] <= 0 && !defeatedEnemyInstanceIds.includes(burn.instanceId)) {
+      defeatedEnemyInstanceIds.push(burn.instanceId)
+      burnLog.push(`🏆 ¡Derrotaste a ${enemy.name}!`)
+    }
+    if (burn.turnsLeft > 1) newBurnStates.push({ instanceId: burn.instanceId, turnsLeft: burn.turnsLeft - 1 })
+  }
+
+  // ── Aplicar nueva quemadura si la skill tiene burn_chance ─────────────────
+  let newBurnApplied = false
+  if (input.action === 'skill' && input.skillUsed?.burn_chance && playerDamageResult.damage > 0) {
+    const alreadyBurning = newBurnStates.some(b => b.instanceId === target.instanceId)
+    if (!alreadyBurning && Math.random() < input.skillUsed.burn_chance) {
+      newBurnStates.push({ instanceId: target.instanceId, turnsLeft: 3 })
+      newBurnApplied = true
+    }
+  }
+
   // ── Contraataque de cada enemigo vivo ─────────────────────────────────────
   // Al usar ítem, el jugador no bloquea ni ataca — recibe daño normal
   const isBlockingThisTurn = input.action === 'block'
   let currentPlayerHP = newPlayerHP_fromItem
   let blockFailed = false
+
+  // Log del ataque del jugador para 1 enemigo (independiente del contraataque)
+  if (liveEnemies.length === 1 && input.action !== 'item') {
+    const singleEnemy = liveEnemies[0]
+    const critText = playerDamageResult.isOvercrit ? ' ⚡⚡ OVERCRIT!' : playerDamageResult.isCritical ? ' ⚡ CRÍTICO!' : ''
+    if (actionType === 'block') {
+      log.push(`🛡️ ${player.name} toma posición defensiva!`)
+    } else if (actionType === 'skill' && input.skillUsed) {
+      log.push(`✨ ${player.name} usa ${input.skillUsed.name} en ${singleEnemy.name} por ${playerDamageResult.damage} de daño!${critText}`)
+    } else {
+      log.push(`⚔️ ${player.name} ataca a ${singleEnemy.name} por ${playerDamageResult.damage} de daño!${critText}`)
+    }
+    log.push(...passiveLog)
+    if (newBurnApplied) log.push(`🔥 ¡${target.name} está en llamas! Sufrirá daño por 3 turnos.`)
+    log.push(...burnLog)
+  }
 
   for (const enemy of liveEnemies) {
     // Martillo: enemigo stunneado el turno anterior no ataca
@@ -365,6 +411,9 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
       log.push(`🔨 ${enemy.name} está aturdido y no puede atacar!`)
       continue
     }
+    // Dummy/entrenamiento: enemigo con attack 0 no contraataca
+    if (enemy.attack === 0) continue
+
     const enemyStats: BossStats = {
       hp: enemy.currentHP,
       max_hp: enemy.maxHP,
@@ -387,17 +436,19 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
         log.push(`👹 ${enemy.name} te golpea por ${enemyDamageResult.damage} de daño!`)
       }
     } else {
-      // Un solo enemigo: log unificado (solo para ataque/skill/block; ítem ya logueó arriba)
-      if (input.action !== 'item') {
-        log.push(...buildCombatLog(
-          player.name, enemy.name,
-          playerDamageResult, enemyDamageResult,
-          actionType as 'attack' | 'skill' | 'block', input.skillUsed?.name
-        ))
-      } else {
-        // Para ítem con 1 enemigo: solo log del contraataque
+      // Un solo enemigo que sí ataca: log del contraataque
+      if (input.action === 'item') {
         if (enemyDamageResult.blocked) {
-          log.push(`🛡️ Bloqueaste el ataque de ${enemy.name}! (sin defensa activa)`)
+          log.push(`🛡️ Bloqueaste el ataque de ${enemy.name}!`)
+        } else {
+          log.push(`👹 ${enemy.name} te golpea por ${enemyDamageResult.damage} de daño!`)
+        }
+      } else {
+        // Solo loguear el contraataque (el ataque del jugador ya se logueó arriba)
+        if (enemyDamageResult.blocked) {
+          log.push(`🛡️ Bloqueaste el ataque de ${enemy.name}!`)
+        } else if (isBlockingThisTurn && thisBlockFailed) {
+          log.push(`💥 ¡Bloqueo fallido! ${enemy.name} te golpea por ${enemyDamageResult.damage} de daño!`)
         } else {
           log.push(`👹 ${enemy.name} te golpea por ${enemyDamageResult.damage} de daño!`)
         }
@@ -418,6 +469,9 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
       attackLog.push(`⚔️ ${player.name} ataca a ${target.name} por ${playerDamageResult.damage} de daño!${critText}`)
     }
     log.unshift(...attackLog)
+    log.push(...passiveLog)
+    if (newBurnApplied) log.push(`🔥 ¡${target.name} está en llamas! Sufrirá daño por 3 turnos.`)
+    log.push(...burnLog)
   }
 
   // ── Resultados ────────────────────────────────────────────────────────────
@@ -442,6 +496,7 @@ export async function takeTurnAction(input: TakeTurnInput): Promise<TakeTurnResu
     allEnemiesDefeated,
     newConsecutiveBlocks,
     newStunnedEnemyIds,
+    newBurnStates,
     log,
   }
 }

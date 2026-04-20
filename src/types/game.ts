@@ -72,6 +72,7 @@ export interface Player {
   equipped_classes: string[]
   equipped_class: string
   unlocked_skills: string[]
+  equipped_skills: string[]
   created_at: string
 }
 
@@ -121,6 +122,9 @@ export interface InventoryEntry {
 
 export type DungeonRank = 'F' | 'E' | 'D' | 'C' | 'B' | 'A' | 'S'
 
+export type SpawnWeight = { id: number; weight: number }
+export type SpawnTable = Record<string, SpawnWeight[]>  // key = sala (string)
+
 export interface Dungeon {
   id: number
   name: string
@@ -129,13 +133,13 @@ export interface Dungeon {
   extraction_fee: number
   description: string
   background: string
+  spawn_table?: SpawnTable
 }
 
 // ─── Bosses ───────────────────────────────────────────────────────────────────
 
 export interface BossStats {
-  hp: number
-  max_hp: number
+  hp: number   // usado como max_hp — el HP actual se maneja en el store
   attack: number
   defense: number
 }
@@ -166,8 +170,7 @@ export interface Boss {
 // ─── Enemies ──────────────────────────────────────────────────────────────────
 
 export interface EnemyStats {
-  hp: number
-  max_hp: number
+  hp: number   // usado como max_hp — el HP actual se maneja en el store
   attack: number
   defense: number
 }
@@ -200,6 +203,13 @@ export interface EnemyCombatState {
 
 // ─── Combat ───────────────────────────────────────────────────────────────────
 
+// ─── Efectos de estado ───────────────────────────────────────────────────────
+
+export interface BurnState {
+  instanceId: number
+  turnsLeft: number
+}
+
 export type CombatAction = 'attack' | 'skill' | 'item' | 'block'
 
 export interface CombatState {
@@ -231,6 +241,43 @@ export interface PlayerSkill {
   ignores_class_bonus?: boolean
 }
 
+// ─── Eventos de sala intermedia ──────────────────────────────────────────────
+
+export type RoomEventType =
+  | 'treasure'       // Cofre del tesoro
+  | 'ambush'         // Emboscada
+  | 'merchant'       // Mercader
+  | 'healing_altar'  // Altar de curación
+  | 'poison_trap'    // Trampa venenosa
+  | 'cracked_wall'   // Muro agrietado
+
+export interface RoomEvent {
+  type: RoomEventType
+  resolved: boolean  // true cuando el jugador ya interactuó
+}
+
+// Pesos para el sorteo de evento (suman 100)
+export const EVENT_WEIGHTS: { type: RoomEventType; weight: number }[] = [
+  { type: 'treasure',      weight: 30 },
+  { type: 'ambush',        weight: 25 },
+  { type: 'healing_altar', weight: 20 },
+  { type: 'poison_trap',   weight: 15 },
+  { type: 'merchant',      weight: 8  },
+  { type: 'cracked_wall',  weight: 2  },
+]
+
+export function rollRoomEvent(): RoomEvent | null {
+  // 25% de que haya evento
+  if (Math.random() > 0.25) return null
+  const total = EVENT_WEIGHTS.reduce((s, e) => s + e.weight, 0)
+  let r = Math.random() * total
+  for (const e of EVENT_WEIGHTS) {
+    r -= e.weight
+    if (r <= 0) return { type: e.type, resolved: false }
+  }
+  return { type: 'treasure', resolved: false }
+}
+
 // ─── Run State ────────────────────────────────────────────────────────────────
 
 export type RoomPhase = 'between_rooms' | 'in_combat' | 'boss' | 'results'
@@ -251,6 +298,7 @@ export interface RunState {
   accumulatedLoot: AccumulatedLoot
   bossDefeated: boolean
   depth: number
+  currentEvent: RoomEvent | null
 }
 
 // ─── Profundidad post-boss ────────────────────────────────────────────────────

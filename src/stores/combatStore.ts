@@ -1,11 +1,12 @@
 import { create } from 'zustand'
-import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy } from '@/types/game'
+import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy, BurnState, RoomEvent } from '@/types/game'
 
 interface CombatStore extends CombatState {
   // Run state
   run: RunState
   consecutiveBlocks: number
   stunnedEnemyIds: number[]   // instanceIds stunneados por martillo este turno
+  burnStates: BurnState[]     // enemigos quemados con turnos restantes
 
   // Combat actions
   initCombat: (
@@ -25,6 +26,8 @@ interface CombatStore extends CombatState {
   reset: () => void
   setConsecutiveBlocks: (n: number) => void
   setStunnedEnemyIds: (ids: number[]) => void
+  setBurnStates: (states: BurnState[]) => void
+  setCurrentEvent: (event: RoomEvent | null) => void
   setTargetIndex: (index: number) => void
 
   // Run actions
@@ -58,6 +61,7 @@ const initialRunState: RunState = {
   accumulatedLoot: { exp: 0, gold: 0, items: [] },
   bossDefeated: false,
   depth: 0,
+  currentEvent: null,
 }
 
 export const useCombatStore = create<CombatStore>((set) => ({
@@ -65,6 +69,7 @@ export const useCombatStore = create<CombatStore>((set) => ({
   run: initialRunState,
   consecutiveBlocks: 0,
   stunnedEnemyIds: [],
+  burnStates: [],
 
   // --- Combat ---
   initCombat: (playerHP, playerStamina, playerMana, enemies) => set((state) => ({
@@ -76,6 +81,7 @@ export const useCombatStore = create<CombatStore>((set) => ({
     log: ['⚔️ ¡Comenzó el combate!'],
     consecutiveBlocks: 0,
     stunnedEnemyIds: [],
+    burnStates: [],
     run: {
       ...state.run,
       currentEnemies: enemies,
@@ -104,7 +110,9 @@ export const useCombatStore = create<CombatStore>((set) => ({
   setStatus: (status) => set({ status }),
   setConsecutiveBlocks: (n) => set({ consecutiveBlocks: n }),
   setStunnedEnemyIds: (ids) => set({ stunnedEnemyIds: ids }),
-  reset: () => set({ ...initialCombatState, run: initialRunState, consecutiveBlocks: 0, stunnedEnemyIds: [] }),
+  setBurnStates: (states) => set({ burnStates: states }),
+  setCurrentEvent: (event) => set((state) => ({ run: { ...state.run, currentEvent: event } })),
+  reset: () => set({ ...initialCombatState, run: initialRunState, consecutiveBlocks: 0, stunnedEnemyIds: [], burnStates: [] }),
 
   setTargetIndex: (index) => set((state) => ({
     run: { ...state.run, targetIndex: index },
@@ -152,6 +160,7 @@ export const useCombatStore = create<CombatStore>((set) => ({
         currentEnemy: null,
         currentEnemies: [],
         targetIndex: 0,
+        currentEvent: null,
       },
     }
   }),
@@ -168,6 +177,7 @@ export const useCombatStore = create<CombatStore>((set) => ({
       currentEnemies: [],
       targetIndex: 0,
       phase: 'between_rooms',
+      currentEvent: null,
     },
   })),
 }))

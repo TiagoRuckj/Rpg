@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Player, Item, InventoryEntry } from '@/types/game'
 import { buyCartAction, sellCartAction } from '@/actions/shopActions'
+import { useToast, ToastContainer } from './Toast'
 import ItemIcon from './ItemIcon'
 
 interface Props {
@@ -22,15 +23,12 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
   const [currentPlayer, setCurrentPlayer] = useState(player)
   const [inventory, setInventory] = useState(initialInventory)
   const [loading, setLoading] = useState(false)
-  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
+  const { toasts, addToast } = useToast()
 
   const [buyCart, setBuyCart] = useState<Record<number, number>>({})
   const [sellCart, setSellCart] = useState<Record<number, number>>({})
 
-  function showMsg(text: string, type: 'success' | 'error') {
-    setMessage({ text, type })
-    setTimeout(() => setMessage(null), 3000)
-  }
+
 
   // ── Carrito de compra ───────────────────────────────────────────────────────
   function addToBuyCart(item: Item) {
@@ -55,7 +53,7 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
     setLoading(true)
     const result = await buyCartAction(buyCart)
     if (!result.success) {
-      showMsg(result.error ?? 'Error al comprar', 'error')
+      addToast(result.error ?? 'Error al comprar', 'error')
       setLoading(false)
       return
     }
@@ -71,7 +69,7 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
     setInventory(updatedInventory)
     onPlayerUpdate(updatedPlayer, updatedInventory)
     setBuyCart({})
-    showMsg(`✅ Compra confirmada — ${result.goldSpent} 💰 gastados`, 'success')
+    addToast(`✅ Compra confirmada — ${result.goldSpent} 💰 gastados`, 'success')
     setLoading(false)
   }
 
@@ -107,7 +105,7 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
     setLoading(true)
     const result = await sellCartAction(sellCart)
     if (!result.success) {
-      showMsg(result.error ?? 'Error al vender', 'error')
+      addToast(result.error ?? 'Error al vender', 'error')
       setLoading(false)
       return
     }
@@ -132,13 +130,13 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
     setInventory(updatedInventory)
     onPlayerUpdate(updatedPlayer, updatedInventory)
     setSellCart({})
-    showMsg(`✅ Venta confirmada — +${result.goldGained} 💰`, 'success')
+    addToast(`✅ Venta confirmada — +${result.goldGained} 💰`, 'success')
     setLoading(false)
   }
 
   return (
-    <div className="min-h-screen bg-black flex justify-center">
-      <div className="w-full min-h-screen bg-gray-900 text-white flex flex-col max-w-2xl">
+    <div className="h-screen bg-gray-950 flex justify-center overflow-hidden">
+      <div className="w-full h-screen bg-gray-950 text-white flex flex-col max-w-2xl overflow-hidden">
 
         {/* Header */}
         <div className="flex items-center gap-4 p-4 border-b border-gray-800">
@@ -167,14 +165,7 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
           </button>
         </div>
 
-        {/* Mensaje */}
-        {message && (
-          <div className={`mx-4 mt-3 rounded-lg p-3 text-center text-sm font-bold ${
-            message.type === 'success' ? 'bg-green-900 text-green-400' : 'bg-red-900 text-red-400'
-          }`}>
-            {message.text}
-          </div>
-        )}
+        <ToastContainer toasts={toasts} />
 
         {/* Contenido scrolleable — padding inferior para no quedar tapado por el panel fijo */}
         <div className="flex-1 overflow-y-auto p-4 pb-36">

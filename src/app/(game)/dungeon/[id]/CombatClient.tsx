@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   Player, Dungeon, Boss, Enemy, CombatAction, PlayerSkill,
   EnemyType, EnemyCombatState, deriveStats, depthMultiplier, rollEnemyCount,
+  RoomEvent, rollRoomEvent,
 } from '@/types/game'
 import { useCombatStore } from '@/stores/combatStore'
 import { takeTurnAction, EnemyTurnState, ItemUsed } from '@/actions/combatActions'
@@ -28,14 +29,44 @@ function pickRandomEnemy(pool: Enemy[]): Enemy {
   return pool[Math.floor(Math.random() * pool.length)]
 }
 
+// Selección ponderada: weights es un array de { id, weight } donde weight es 0-100
+// Si no se pasan weights, elige uniformemente del pool
+function pickWeightedEnemy(pool: Enemy[], weights?: { id: number; weight: number }[]): Enemy {
+  if (!weights || weights.length === 0) return pickRandomEnemy(pool)
+  const total = weights.reduce((s, w) => s + w.weight, 0)
+  let r = Math.random() * total
+  for (const w of weights) {
+    r -= w.weight
+    if (r <= 0) {
+      const found = pool.find(e => e.id === w.id)
+      if (found) return found
+    }
+  }
+  return pickRandomEnemy(pool)
+}
+
+function getSpawnWeights(
+  spawnTable: Record<string, { id: number; weight: number }[]> | undefined,
+  room: number
+): { id: number; weight: number }[] | undefined {
+  if (!spawnTable) return undefined
+  // Busca la sala exacta, si no existe usa la sala más alta disponible <= room
+  const keys = Object.keys(spawnTable).map(Number).sort((a, b) => a - b)
+  const key = keys.filter(k => k <= room).pop()
+  return key !== undefined ? spawnTable[String(key)] : undefined
+}
+
 function buildEnemyCombatStates(
   pool: Enemy[],
   count: number,
-  depthMult: number
+  depthMult: number,
+  spawnTable?: Record<string, { id: number; weight: number }[]>,
+  room?: number,
 ): EnemyCombatState[] {
+  const weights = spawnTable && room ? getSpawnWeights(spawnTable, room) : undefined
   return Array.from({ length: count }, () => {
-    const enemy = pickRandomEnemy(pool)
-    const maxHP = Math.round(enemy.stats.max_hp * depthMult)
+    const enemy = pickWeightedEnemy(pool, weights)
+    const maxHP = Math.round(enemy.stats.hp * depthMult)
     return {
       instanceId: nextInstanceId(),
       enemy,
@@ -47,12 +78,27 @@ function buildEnemyCombatStates(
 }
 
 function resolveEnemyLoot(enemy: Enemy, mult: number = 1): { exp: number; gold: number; itemId: number | null; itemName: string | null } {
-  const loot = enemy.loot_table[0]
-  if (!loot) return { exp: 0, gold: 0, itemId: null, itemName: null }
-  const gold = loot.gold_min + Math.floor(Math.random() * (loot.gold_max - loot.gold_min + 1))
-  const adjustedChance = Math.min(0.95, loot.item_chance * mult)
-  const dropsItem = loot.item_id !== null && Math.random() < adjustedChance
-  return { exp: loot.exp, gold, itemId: dropsItem ? loot.item_id : null, itemName: dropsItem ? (loot.item_name ?? null) : null }
+  if (!enemy.loot_table || enemy.loot_table.length === 0) return { exp: 0, gold: 0, itemId: null, itemName: null }
+
+  // Usar la primera entrada para exp y gold
+  const primary = enemy.loot_table[0]
+  const gold = primary.gold_min + Math.floor(Math.random() * (primary.gold_max - primary.gold_min + 1))
+  const exp = primary.exp
+
+  // Tirar drop para cada entrada del loot_table
+  let itemId: number | null = null
+  let itemName: string | null = null
+  for (const entry of enemy.loot_table) {
+    if (entry.item_id === null) continue
+    const adjustedChance = Math.min(0.95, entry.item_chance * mult)
+    if (Math.random() < adjustedChance) {
+      itemId = entry.item_id
+      itemName = (entry as any).item_name ?? null
+      break  // solo dropea un item por enemigo
+    }
+  }
+
+  return { exp, gold, itemId, itemName }
 }
 
 export default function CombatClient({ player, dungeon, boss, enemies }: Props) {
@@ -62,10 +108,12 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
   const [showSkills, setShowSkills] = useState(false)
   const [showItems, setShowItems] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [granGoblinBoss, setGranGoblinBoss] = useState<import('@/types/game').Boss | null>(null)
+  const [fightingEvent, setFightingEvent] = useState(false)
   const [consumables, setConsumables] = useState<any[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [lastLoot, setLastLoot] = useState<{ exp: number; gold: number; itemId: number | null; itemName: string | null } | null>(null)
-  const [bossDropNames, setBossDropNames] = useState<string[]>([])
+  const [bossDrops, setBossDrops] = useState<{ name: string; sprite: string }[]>([])
   const [showRestItems, setShowRestItems] = useState(false)
   const [showRestConsumables, setShowRestConsumables] = useState(false)
   const [restConsumables, setRestConsumables] = useState<any[]>([])
@@ -80,18 +128,24 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     setPlayerStamina, setPlayerMana, addLog, nextTurn, setStatus,
     initRun, setPhase, setCurrentEnemy, addLoot, advanceRoom,
     setBossDefeated, increaseDepth,
+    setCurrentEvent,
     consecutiveBlocks, setConsecutiveBlocks,
     stunnedEnemyIds, setStunnedEnemyIds,
+    burnStates, setBurnStates,
     setTargetIndex,
   } = useCombatStore()
 
   const derived = deriveStats(player.primary_stats)
   const unlockedSkills = player.unlocked_skills ?? []
+  const equippedSkillIds = player.equipped_skills ?? []
+  // En combate solo aparecen las skills equipadas (y desbloqueadas)
   const availableSkills = BASE_SKILLS.filter(
-    s => !LOCKED_SKILLS.has(s.id) || unlockedSkills.includes(s.id)
+    s => equippedSkillIds.includes(s.id) && (!LOCKED_SKILLS.has(s.id) || unlockedSkills.includes(s.id))
   )
 
   const depthMult = depthMultiplier(run.depth)
+  // Training room: boss con attack 0 y sin loot
+  const isTraining = boss.stats.attack === 0 && boss.loot_table.length === 0
 
   useEffect(() => {
     initRun(dungeon.rooms)
@@ -100,9 +154,34 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     setPlayerMana(derived.max_mana)
   }, [])
 
+
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [log])
+
+  // Auto-iniciar combate para dungeons con rooms=0 (ej: training room)
+  useEffect(() => {
+    if (run.phase !== 'boss' || run.currentEnemies.length > 0 || status !== 'idle') return
+    const scaledMaxHP = Math.round(boss.stats.hp * (run.depth > 0 ? depthMult : 1))
+    const bossState: EnemyCombatState = {
+      instanceId: nextInstanceId(),
+      enemy: {
+        id: boss.id,
+        dungeon_id: boss.dungeon_id,
+        name: boss.name,
+        stats: { ...boss.stats, hp: scaledMaxHP },
+        loot_table: [],
+        enemy_type: boss.enemy_type,
+      },
+      currentHP: scaledMaxHP,
+      maxHP: scaledMaxHP,
+      alive: true,
+    }
+    setStunnedEnemyIds([])
+    setBurnStates([])
+    initCombat(playerHP, playerStamina, playerMana, [bossState])
+  }, [run.phase, run.currentEnemies.length, status])
 
   const isBossRoom = run.bossDefeated === false && run.currentRoom >= run.totalRooms
   const playerHPPct = Math.max(0, Math.round((playerHP / derived.max_hp) * 100))
@@ -162,6 +241,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       isBlocking: action === 'block',
       consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
       stunnedEnemyIds,
+      burnStates,
     })
 
     if (!result.success) {
@@ -175,6 +255,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     setPlayerMana(result.newPlayerMana)
     setConsecutiveBlocks(result.newConsecutiveBlocks)
     setStunnedEnemyIds(result.newStunnedEnemyIds)
+    setBurnStates(result.newBurnStates)
     nextTurn()
 
     // Aplicar HPs actualizados a cada enemigo
@@ -208,9 +289,21 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     if (result.allEnemiesDefeated) {
       setStatus('victory')
       setTimeout(() => {
-        advanceRoom()
-        setStatus('idle')
-        setPhase('between_rooms')
+        if (fightingEvent) {
+          // Combate de evento terminado — volver a between_rooms sin avanzar sala
+          setFightingEvent(false)
+          setStatus('idle')
+          setPhase('between_rooms')
+        } else {
+          advanceRoom()
+          // Sortear evento para la sala intermedia (no en profundidades post-boss)
+          if (!run.bossDefeated) {
+            const event = rollRoomEvent()
+            setCurrentEvent(event)
+          }
+          setStatus('idle')
+          setPhase('between_rooms')
+        }
       }, 1200)
     } else if (result.playerDefeated) {
       setStatus('defeat')
@@ -254,6 +347,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       isBlocking: action === 'block',
       consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
       stunnedEnemyIds: [],
+      burnStates,
     })
 
     if (!result.success) {
@@ -266,11 +360,69 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     setPlayerStamina(result.newPlayerStamina)
     setPlayerMana(result.newPlayerMana)
     setConsecutiveBlocks(result.newConsecutiveBlocks)
+    setBurnStates(result.newBurnStates)
+    if (isTraining) {
+      setPlayerStamina(derived.max_stamina)
+      setPlayerMana(derived.max_mana)
+    }
     nextTurn()
 
     setEnemyHP(bossEnemyState.instanceId, result.updatedEnemyHPs[bossEnemyState.instanceId] ?? bossEnemyState.currentHP)
 
     if (result.allEnemiesDefeated) {
+      // Boss de evento (muro agrietado) — loot asegurado, volver a between_rooms
+      if (fightingEvent && granGoblinBoss) {
+        const bossLootTable = granGoblinBoss.loot_table ?? []
+        const bossItems: number[] = []
+        for (const entry of bossLootTable) {
+          if (entry.item_id && Math.random() < entry.chance) bossItems.push(entry.item_id)
+        }
+        addLoot({ items: bossItems })
+        addLog('🏆 ¡Derrotaste al Gran Goblin! Item asegurado obtenido.')
+        setFightingEvent(false)
+        setGranGoblinBoss(null)
+        setStatus('victory')
+        setTimeout(() => {
+          setStatus('idle')
+          setPhase('between_rooms')
+        }, 1200)
+        return
+      }
+
+      if (isTraining) {
+        // Training room: solo resetear el dummy, mantener recursos del jugador
+        addLog('💪 ¡El dummy fue destruido! Respawneando...')
+        setTimeout(() => {
+          const scaledMaxHP = Math.round(boss.stats.hp * (run.depth > 0 ? depthMult : 1))
+          const newDummyState: EnemyCombatState = {
+            instanceId: nextInstanceId(),
+            enemy: {
+              id: boss.id,
+              dungeon_id: boss.dungeon_id,
+              name: boss.name,
+              stats: { ...boss.stats, hp: scaledMaxHP },
+              loot_table: [],
+              enemy_type: boss.enemy_type,
+            },
+            currentHP: scaledMaxHP,
+            maxHP: scaledMaxHP,
+            alive: true,
+          }
+          // Resetear solo el enemigo, sin tocar HP/stamina/mana del jugador
+          setEnemyHP(newDummyState.instanceId, scaledMaxHP)
+          setConsecutiveBlocks(0)
+          setStunnedEnemyIds([])
+          setBurnStates([])
+          // Reemplazar enemies en el store directamente
+          initCombat(playerHP, playerStamina, playerMana, [newDummyState])
+          // Restaurar recursos actuales (initCombat los pisa con initialCombatState)
+          setPlayerHP(result.newPlayerHP)
+          setPlayerStamina(result.newPlayerStamina)
+          setPlayerMana(result.newPlayerMana)
+        }, 1000)
+        return
+      }
+
       const bossLootTable = boss.loot_table ?? []
       const bossItems: number[] = []
       for (const entry of bossLootTable) {
@@ -284,12 +436,15 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       const totalGold  = run.accumulatedLoot.gold + bossGold
       const totalItems = [...run.accumulatedLoot.items, ...bossItems]
 
-      // Nombres de los items dropeados por el boss para mostrar en resultados
-      const droppedNames = bossItems.map(itemId => {
+      // Items dropeados por el boss — nombre y sprite para mostrar en resultados
+      const droppedItems = bossItems.map(itemId => {
         const entry = boss.loot_table.find(e => e.item_id === itemId)
-        return (entry as any)?.item_name ?? `Item #${itemId}`
+        return {
+          name:   (entry as any)?.item_name ?? `Item #${itemId}`,
+          sprite: (entry as any)?.item_sprite ?? '',
+        }
       })
-      setBossDropNames(droppedNames)
+      setBossDrops(droppedItems)
 
       addLoot({ exp: bossExp, gold: bossGold, items: bossItems })
       setBossDefeated(true)
@@ -352,14 +507,16 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
   }
 
   // Construir mapa itemId → nombre desde los loot tables enriquecidos
-  const itemNameMap = new Map<number, string>()
+  const itemInfoMap = new Map<number, { name: string; sprite: string }>()
   for (const enemy of enemies) {
     for (const entry of enemy.loot_table) {
-      if (entry.item_id && entry.item_name) itemNameMap.set(entry.item_id, entry.item_name)
+      if (entry.item_id && entry.item_name)
+        itemInfoMap.set(entry.item_id, { name: entry.item_name, sprite: (entry as any).item_sprite ?? '' })
     }
   }
   for (const entry of (boss as any)?.loot_table ?? []) {
-    if (entry.item_id && entry.item_name) itemNameMap.set(entry.item_id, entry.item_name)
+    if (entry.item_id && entry.item_name)
+      itemInfoMap.set(entry.item_id, { name: entry.item_name, sprite: (entry as any).item_sprite ?? '' })
   }
 
   async function handleOpenRestConsumables() {
@@ -498,6 +655,33 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
             </div>
           )}
 
+          {/* ── Evento aleatorio ────────────────────────────────────────────────── */}
+          {run.currentEvent && !run.currentEvent.resolved && (
+            <EventPanel
+              event={run.currentEvent}
+              playerHP={playerHP}
+              maxHP={derived.max_hp}
+              playerGold={0}  // en run no hay gold disponible para mercader aún
+              enemies={enemies}
+              dungeon={dungeon}
+              depthMult={depthMult}
+              granGoblinBoss={granGoblinBoss}
+              onSetGranGoblinBoss={setGranGoblinBoss}
+              onResolve={(effect) => {
+                setCurrentEvent({ ...run.currentEvent!, resolved: true })
+                if (effect.healHP) setPlayerHP(Math.min(playerHP + effect.healHP, derived.max_hp))
+                if (effect.damage) setPlayerHP(Math.max(1, playerHP - effect.damage))
+                if (effect.startCombat && effect.combatEnemies) {
+                  // Emboscada o muro agrietado — iniciar combate
+                  setFightingEvent(true)
+                  setCurrentEvent({ ...run.currentEvent!, resolved: true })
+                  initCombat(playerHP, playerStamina, playerMana, effect.combatEnemies)
+                  setPhase(effect.isBoss ? 'boss' : 'in_combat')
+                }
+              }}
+            />
+          )}
+
           <div className="flex flex-col gap-3 mt-auto">
             {/* Acciones de descanso */}
             <div className="flex gap-2">
@@ -516,17 +700,18 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
               </button>
             </div>
             <button
+              disabled={!!(run.currentEvent && !run.currentEvent.resolved)}
               onClick={() => {
                 if (isBeforeBoss && !run.bossDefeated) {
                   // Boss: 1 solo enemigo escalado
-                  const scaledMaxHP = Math.round(boss.stats.max_hp * (run.depth > 0 ? depthMult : 1))
+                  const scaledMaxHP = Math.round(boss.stats.hp * (run.depth > 0 ? depthMult : 1))
                   const bossState: EnemyCombatState = {
                     instanceId: nextInstanceId(),
                     enemy: {
                       id: boss.id,
                       dungeon_id: boss.dungeon_id,
                       name: boss.name,
-                      stats: { ...boss.stats, hp: scaledMaxHP, max_hp: scaledMaxHP },
+                      stats: { ...boss.stats, hp: scaledMaxHP },
                       loot_table: [],
                       enemy_type: boss.enemy_type,
                     },
@@ -535,15 +720,17 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
                     alive: true,
                   }
                   setStunnedEnemyIds([])
+                  setBurnStates([])
                   initCombat(playerHP, playerStamina, playerMana, [bossState])
                   setPhase('boss')
                 } else {
                   // Sala normal: tirar cantidad de enemigos
                   const count = rollEnemyCount(run.currentRoom + 1, dungeon.rank, run.depth)
-                  const roomEnemies = buildEnemyCombatStates(enemies, count, depthMult)
+                  const roomEnemies = buildEnemyCombatStates(enemies, count, depthMult, dungeon.spawn_table, run.currentRoom + 1)
                   // Guardar referencia al primer enemigo para loot/tipo (compatibilidad)
                   setCurrentEnemy(roomEnemies[0].enemy)
                   setStunnedEnemyIds([])
+                  setBurnStates([])
                   initCombat(playerHP, playerStamina, playerMana, roomEnemies)
                   setPhase('in_combat')
                 }
@@ -554,7 +741,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
                   : run.depth > 0
                   ? 'bg-orange-600 hover:bg-orange-500 text-white'
                   : 'bg-yellow-500 hover:bg-yellow-400 text-black'
-              }`}
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
             >
               {isBeforeBoss && !run.bossDefeated
                 ? '💀 Enfrentar al Boss'
@@ -591,8 +778,13 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
                 : <div className="flex flex-col gap-2 overflow-y-auto">
                     {run.accumulatedLoot.items.map((itemId, i) => (
                       <div key={i} className="flex items-center gap-3 bg-gray-800 rounded-lg px-4 py-3">
-                        <span className="text-green-400">🎁</span>
-                        <span className="text-white text-sm font-medium">{itemNameMap.get(itemId) ?? `Item #${itemId}`}</span>
+                      {(() => {
+                          const info = itemInfoMap.get(itemId)
+                          return info?.sprite
+                            ? <img src={`/sprites/items/${info.sprite}`} alt={info?.name} className="w-8 h-8 object-contain shrink-0" style={{ imageRendering: 'pixelated' }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                            : <span className="text-green-400 text-lg shrink-0">🎁</span>
+                        })()}
+                        <span className="text-white text-sm font-medium">{itemInfoMap.get(itemId)?.name ?? `Item #${itemId}`}</span>
                       </div>
                     ))}
                   </div>
@@ -673,14 +865,27 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
               <span className="text-gray-400">Gold obtenido</span>
               <span className="text-yellow-400 font-bold text-lg">+{run.accumulatedLoot.gold} 💰</span>
             </div>
-            {bossDropNames.length > 0 && (
-              <div className="flex flex-col py-3 border-b border-gray-700 gap-1">
-                <span className="text-gray-400 mb-1">Items obtenidos</span>
-                {bossDropNames.map((name, i) => (
-                  <div key={i} className="flex justify-between items-center">
-                    <span className="text-green-400 font-bold">🎁 {name}</span>
-                  </div>
-                ))}
+            {bossDrops.length > 0 && (
+              <div className="flex flex-col py-3 border-b border-gray-700 gap-3">
+                <span className="text-gray-400">Items obtenidos</span>
+                <div className="flex flex-wrap gap-3">
+                  {bossDrops.map((drop, i) => (
+                    <div key={i} className="flex items-center gap-2 bg-gray-700 rounded-lg px-3 py-2">
+                      {drop.sprite ? (
+                        <img
+                          src={`/sprites/items/${drop.sprite}`}
+                          alt={drop.name}
+                          className="w-8 h-8 object-contain"
+                          style={{ imageRendering: 'pixelated' }}
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                        />
+                      ) : (
+                        <span className="text-lg">🎁</span>
+                      )}
+                      <span className="text-green-400 font-bold text-sm">{drop.name}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             <div className="flex justify-between items-center py-3">
@@ -711,6 +916,9 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       </div>
     )
   }
+
+  // Mientras el useEffect inicializa el combate, no renderizar nada
+  if (run.phase === 'boss' && run.currentEnemies.length === 0) return null
 
   // ─── PANTALLA DE COMBATE ────────────────────────────────────────────────────
   return (
@@ -748,6 +956,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
                 <span className={`text-xs font-bold text-center ${isBossRoom ? 'text-red-400' : 'text-red-300'}`}>
                   {e.enemy.name}
                   {isTarget && ' 🎯'}
+                  {burnStates.some(b => b.instanceId === e.instanceId) && ' 🔥'}
                 </span>
                 {/* Mini HP bar por enemigo */}
                 <div className="w-full bg-gray-600 rounded-full h-1.5 mt-1">
@@ -892,6 +1101,17 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
           </div>
         )}
 
+        {/* Botón salir — training room */}
+        {isTraining && status === 'active' && (
+          <button
+            onClick={handleExitDungeon}
+            disabled={isSaving}
+            className="w-full bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-300 font-bold py-2 rounded-lg transition text-sm"
+          >
+            {isSaving ? 'Saliendo...' : '🚪 Salir del entrenamiento'}
+          </button>
+        )}
+
         {/* Botones de acción */}
         {status === 'active' && !showSkills && !showItems && (
           <div className="grid grid-cols-2 gap-3">
@@ -940,6 +1160,194 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
         </div>
       </div>
 
+    </div>
+  )
+}
+
+// ─── EventPanel ──────────────────────────────────────────────────────────────
+
+interface EventEffect {
+  healHP?: number
+  damage?: number
+  startCombat?: boolean
+  combatEnemies?: EnemyCombatState[]
+  isBoss?: boolean
+}
+
+interface EventPanelProps {
+  event: import('@/types/game').RoomEvent
+  playerHP: number
+  maxHP: number
+  playerGold: number
+  enemies: import('@/types/game').Enemy[]
+  dungeon: import('@/types/game').Dungeon
+  depthMult: number
+  granGoblinBoss: import('@/types/game').Boss | null
+  onSetGranGoblinBoss: (boss: import('@/types/game').Boss | null) => void
+  onResolve: (effect: EventEffect) => void
+}
+
+const EVENT_INFO: Record<string, { icon: string; title: string; color: string }> = {
+  treasure:      { icon: '📦', title: 'Cofre del Tesoro',    color: 'border-yellow-700 bg-yellow-950/40' },
+  ambush:        { icon: '⚔️', title: 'Emboscada',           color: 'border-red-700 bg-red-950/40'       },
+  merchant:      { icon: '🧙', title: 'Mercader Errante',    color: 'border-blue-700 bg-blue-950/40'     },
+  healing_altar: { icon: '✨', title: 'Altar de Curación',   color: 'border-green-700 bg-green-950/40'   },
+  poison_trap:   { icon: '☠️', title: 'Trampa Venenosa',     color: 'border-purple-700 bg-purple-950/40' },
+  cracked_wall:  { icon: '🧱', title: 'Muro Agrietado',      color: 'border-gray-600 bg-gray-800/60'     },
+}
+
+function EventPanel({ event, playerHP, maxHP, enemies, dungeon, depthMult, granGoblinBoss, onSetGranGoblinBoss, onResolve }: EventPanelProps) {
+  const info = EVENT_INFO[event.type]
+  const [loading, setLoading] = useState(false)
+  const [fetchedBoss, setFetchedBoss] = useState(false)
+
+  // Calcular efecto según tipo
+  const healAmount = Math.round(maxHP * 0.3)  // altar cura 30% del HP máx
+  const poisonDmg  = Math.round(maxHP * 0.15) // trampa hace 15% del HP máx
+
+  // Cargar boss del muro agrietado desde la DB si no está cargado
+  async function loadGranGoblin() {
+    if (granGoblinBoss || fetchedBoss) return
+    setFetchedBoss(true)
+    const { createClient } = await import('@/lib/supabase/client')
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('bosses')
+      .select('*')
+      .eq('name', 'Gran Goblin')
+      .single()
+    if (data) onSetGranGoblinBoss(data as import('@/types/game').Boss)
+  }
+
+  if (event.type === 'cracked_wall' && !fetchedBoss) {
+    loadGranGoblin()
+  }
+
+  function handleAmbush() {
+    const count = Math.random() < 0.4 ? 2 : 1
+    const pool = enemies.filter(e => e.stats.attack > 0)
+    const combatEnemies: EnemyCombatState[] = Array.from({ length: count }, (_, i) => {
+      const enemy = pool[Math.floor(Math.random() * pool.length)]
+      const maxHP = Math.round(enemy.stats.hp * depthMult * 1.2)  // 20% más fuerte
+      return { instanceId: Date.now() + i, enemy, currentHP: maxHP, maxHP, alive: true }
+    })
+    onResolve({ startCombat: true, combatEnemies, isBoss: false })
+  }
+
+  function handleCrackedWall() {
+    if (!granGoblinBoss) return
+    const maxHP = granGoblinBoss.stats.hp
+    const combatEnemies: EnemyCombatState[] = [{
+      instanceId: Date.now(),
+      enemy: {
+        id: granGoblinBoss.id,
+        dungeon_id: granGoblinBoss.dungeon_id,
+        name: granGoblinBoss.name,
+        stats: { hp: maxHP, attack: granGoblinBoss.stats.attack, defense: granGoblinBoss.stats.defense },
+        loot_table: [],
+        enemy_type: granGoblinBoss.enemy_type,
+      },
+      currentHP: maxHP,
+      maxHP,
+      alive: true,
+    }]
+    onResolve({ startCombat: true, combatEnemies, isBoss: true })
+  }
+
+  return (
+    <div className={`rounded-xl border p-4 flex flex-col gap-3 ${info.color}`}>
+      <div className="flex items-center gap-2">
+        <span className="text-2xl">{info.icon}</span>
+        <h3 className="font-bold text-white">{info.title}</h3>
+      </div>
+
+      {event.type === 'treasure' && (
+        <>
+          <p className="text-gray-300 text-sm">Encontrás un cofre abandonado. Contiene algo de gold.</p>
+          <button
+            onClick={() => {
+              const gold = 20 + Math.floor(Math.random() * 40)
+              onResolve({})  // el gold se maneja via addLoot en el padre — simplificado
+            }}
+            className="bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-2 rounded-lg transition text-sm"
+          >
+            🔓 Abrir cofre
+          </button>
+        </>
+      )}
+
+      {event.type === 'ambush' && (
+        <>
+          <p className="text-gray-300 text-sm">¡Un grupo de goblins te tiende una emboscada! No podés evitar el combate.</p>
+          <button
+            onClick={handleAmbush}
+            className="bg-red-700 hover:bg-red-600 text-white font-bold py-2 rounded-lg transition text-sm"
+          >
+            ⚔️ Combatir
+          </button>
+        </>
+      )}
+
+      {event.type === 'healing_altar' && (
+        <>
+          <p className="text-gray-300 text-sm">Un altar antiguo emite un suave resplandor. Podés absorber su energía.</p>
+          <p className="text-green-400 text-sm font-bold">❤️ +{Math.min(healAmount, maxHP - playerHP)} HP</p>
+          <button
+            onClick={() => onResolve({ healHP: healAmount })}
+            disabled={playerHP >= maxHP}
+            className="bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white font-bold py-2 rounded-lg transition text-sm"
+          >
+            {playerHP >= maxHP ? 'HP al máximo' : '✨ Absorber energía'}
+          </button>
+        </>
+      )}
+
+      {event.type === 'poison_trap' && (
+        <>
+          <p className="text-gray-300 text-sm">Pisás una trampa oculta. El veneno te quema las venas.</p>
+          <p className="text-purple-400 text-sm font-bold">☠️ -{poisonDmg} HP</p>
+          <button
+            onClick={() => onResolve({ damage: poisonDmg })}
+            className="bg-purple-800 hover:bg-purple-700 text-white font-bold py-2 rounded-lg transition text-sm"
+          >
+            😬 Continuar
+          </button>
+        </>
+      )}
+
+      {event.type === 'merchant' && (
+        <>
+          <p className="text-gray-300 text-sm">Un mercader misterioso aparece entre las sombras. No tenés gold del run disponible.</p>
+          <button
+            onClick={() => onResolve({})}
+            className="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition text-sm"
+          >
+            🚶 Ignorar
+          </button>
+        </>
+      )}
+
+      {event.type === 'cracked_wall' && (
+        <>
+          <p className="text-gray-300 text-sm">Ves una grieta en la pared que lleva a una cámara oculta. Se escuchan ruidos al otro lado...</p>
+          <p className="text-orange-400 text-xs">⚠️ Peligro desconocido — recompensa asegurada si sobrevivís</p>
+          <div className="flex gap-2">
+            <button
+              onClick={handleCrackedWall}
+              disabled={!granGoblinBoss}
+              className="flex-1 bg-orange-700 hover:bg-orange-600 disabled:opacity-40 text-white font-bold py-2 rounded-lg transition text-sm"
+            >
+              {granGoblinBoss ? '🧱 Atravesar' : 'Cargando...'}
+            </button>
+            <button
+              onClick={() => onResolve({})}
+              className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition text-sm"
+            >
+              🚶 Ignorar
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }

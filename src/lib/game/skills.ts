@@ -14,11 +14,13 @@ export const BASE_SKILLS: PlayerSkill[] = [
   {
     id: 'fireball',
     name: 'Bola de Fuego',
-    description: 'Lanzás una esfera de fuego que ignora la defensa del enemigo',
-    damage_multiplier: 2.0,
+    description: 'Lanzás una esfera de fuego que ignora la defensa. 10% de quemar al enemigo por 3 turnos.',
+    damage_multiplier: 1.5,
     stamina_cost: 0,
     mana_cost: 20,
     type: 'magical',
+    ignores_defense: true,
+    burn_chance: 0.10,
   },
 ]
 
