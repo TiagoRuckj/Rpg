@@ -410,3 +410,9 @@ export function applyWeaponPassiveResults(input: ApplyPassiveInput): ApplyPassiv
 
   return { updatedEnemyHPs, defeatedEnemyInstanceIds, newStunnedEnemyIds, defeatLog }
 }
+// ─── Costo de curación en el hub ─────────────────────────────────────────────
+// Primeros 100 HP gratis, 2 gold por HP adicional
+export function calcHealCost(missingHP: number): number {
+  if (missingHP <= 100) return 0
+  return Math.ceil((missingHP - 100) * 2)
+}

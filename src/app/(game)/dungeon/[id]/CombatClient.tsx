@@ -1,76 +1,36 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { flushSync } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import {
   Player, Dungeon, Boss, Enemy, CombatAction, PlayerSkill,
   EnemyType, EnemyCombatState, deriveStats, depthMultiplier, rollEnemyCount,
-  rollRoomEvent,
+  rollRoomEvent, EnemyAiState,
 } from '@/types/game'
 import { useCombatStore } from '@/stores/combatStore'
-import { takeTurnAction, EnemyTurnState, ItemUsed } from '@/actions/combatActions'
+import { takeTurnAction, playerTurnAction, enemyTurnAction, EnemyTurnState, ItemUsed } from '@/actions/combatActions'
 import { registerKillAction } from '@/actions/classActions'
 import { saveRunAction } from '@/actions/saveRunAction'
 import { clearRunAction } from '@/actions/activeRunAction'
-import { getConsumablesAction, useItemAction } from '@/actions/itemAction'
 import { BASE_SKILLS, LOCKED_SKILLS } from '@/lib/game/skills'
 import { resolveEnemyLoot, resolveBossLoot } from '@/lib/game/loot'
+import { nextInstanceId, buildEnemyCombatStates, buildSummonedEnemy } from '@/lib/game/spawn'
+import { useItemHandlers } from './hooks/useItemHandlers'
 import { BetweenRoomsScreen } from './components/BetweenRoomsScreen'
 import { ResultsScreen } from './components/ResultsScreen'
+import { CombatScreen, EnemyAnimState, PlayerAnimState } from './components/CombatScreen'
+import { VictoryModal } from './components/VictoryModal'
+import { getPlayerMaxHPAction } from '@/actions/playerStatsAction'
+import AiDebugPanel, { AiDebugEntry } from './components/AiDebugPanel'
+
+export { nextInstanceId, buildEnemyCombatStates }
 
 interface Props {
   player: Player
   dungeon: Dungeon
   boss: Boss
   enemies: Enemy[]
-}
-
-// ─── Helpers de spawn ────────────────────────────────────────────────────────
-
-let instanceCounter = 0
-export function nextInstanceId() { return ++instanceCounter }
-
-function pickRandomEnemy(pool: Enemy[]): Enemy {
-  return pool[Math.floor(Math.random() * pool.length)]
-}
-
-function pickWeightedEnemy(pool: Enemy[], weights?: { id: number; weight: number }[]): Enemy {
-  if (!weights || weights.length === 0) return pickRandomEnemy(pool)
-  const total = weights.reduce((s, w) => s + w.weight, 0)
-  let r = Math.random() * total
-  for (const w of weights) {
-    r -= w.weight
-    if (r <= 0) {
-      const found = pool.find(e => e.id === w.id)
-      if (found) return found
-    }
-  }
-  return pickRandomEnemy(pool)
-}
-
-function getSpawnWeights(
-  spawnTable: Record<string, { id: number; weight: number }[]> | undefined,
-  room: number
-): { id: number; weight: number }[] | undefined {
-  if (!spawnTable) return undefined
-  const keys = Object.keys(spawnTable).map(Number).sort((a, b) => a - b)
-  const key = keys.filter(k => k <= room).pop()
-  return key !== undefined ? spawnTable[String(key)] : undefined
-}
-
-export function buildEnemyCombatStates(
-  pool: Enemy[],
-  count: number,
-  depthMult: number,
-  spawnTable?: Record<string, { id: number; weight: number }[]>,
-  room?: number,
-): EnemyCombatState[] {
-  const weights = spawnTable && room ? getSpawnWeights(spawnTable, room) : undefined
-  return Array.from({ length: count }, () => {
-    const enemy = pickWeightedEnemy(pool, weights)
-    const maxHP = Math.round(enemy.stats.hp * depthMult)
-    return { instanceId: nextInstanceId(), enemy, currentHP: maxHP, maxHP, alive: true }
-  })
 }
 
 // ─── Componente principal ─────────────────────────────────────────────────────
@@ -81,18 +41,53 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
 
   const [isProcessing, setIsProcessing] = useState(false)
   const [showSkills, setShowSkills] = useState(false)
-  const [showItems, setShowItems] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [granGoblinBoss, setGranGoblinBoss] = useState<Boss | null>(null)
   const [fightingEvent, setFightingEvent] = useState(false)
-  const [consumables, setConsumables] = useState<any[]>([])
-  const [loadingItems, setLoadingItems] = useState(false)
+  const aiDebugAccRef = useRef<AiDebugEntry[]>([])
+  const [aiDebugTick, setAiDebugTick] = useState(0)
+  const [mimicPendingGold, setMimicPendingGold] = useState(0)
   const [lastLoot, setLastLoot] = useState<{ exp: number; gold: number; itemId: number | null; itemName: string | null } | null>(null)
   const [bossDrops, setBossDrops] = useState<{ name: string; sprite: string }[]>([])
-  const [showRestConsumables, setShowRestConsumables] = useState(false)
-  const [restConsumables, setRestConsumables] = useState<any[]>([])
-  const [loadingRestItems, setLoadingRestItems] = useState(false)
-  const [usingRestItem, setUsingRestItem] = useState(false)
+
+  // ── maxHP real (con gear) — se actualiza del primer resultado del server ────
+  const [realMaxHP, setRealMaxHP] = useState<number | null>(null)
+  // hpReady evita mostrar HP/maxHP inconsistentes mientras carga el maxHP real
+  const [hpReady, setHpReady] = useState(false)
+
+  // ── Estado de victoria ───────────────────────────────────────────────────
+  const [victoryModal, setVictoryModal] = useState<{
+    type: 'room' | 'boss'
+    exp: number
+    gold: number
+    items: { itemId: number; itemName: string; sprite?: string }[]
+  } | null>(null)
+
+  // ── Estado de animaciones ─────────────────────────────────────────────────
+  const [enemyAnimStates, setEnemyAnimStates] = useState<Record<number, EnemyAnimState>>({})
+  const [playerAnimState, setPlayerAnimState] = useState<PlayerAnimState>('idle')
+  const [floatingDamages, setFloatingDamages] = useState<Array<{ id: number; instanceId: number; value: number; isCrit: boolean; isPlayer: boolean }>>([])
+  const floatIdRef = useRef(0)
+
+  function triggerEnemyAnim(instanceId: number, type: EnemyAnimState, ms = 400) {
+    setEnemyAnimStates(prev => ({ ...prev, [instanceId]: type }))
+    // 'dead' no resetea — el sprite permanece en estado muerto hasta que el modal limpia el estado
+    if (type !== 'dead') {
+      setTimeout(() => setEnemyAnimStates(prev => ({ ...prev, [instanceId]: 'idle' })), ms)
+    }
+  }
+
+  function triggerPlayerAnim(type: PlayerAnimState, ms = 400) {
+    setPlayerAnimState(type)
+    setTimeout(() => setPlayerAnimState('idle'), ms)
+  }
+
+  function spawnFloat(instanceId: number, value: number, isCrit: boolean, isPlayer: boolean) {
+    if (value <= 0) return
+    const id = ++floatIdRef.current
+    setFloatingDamages(prev => [...prev, { id, instanceId, value, isCrit, isPlayer }])
+    setTimeout(() => setFloatingDamages(prev => prev.filter(f => f.id !== id)), 900)
+  }
 
   const {
     playerHP, playerStamina, playerMana,
@@ -108,9 +103,13 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     burnStates, setBurnStates,
     setTargetIndex,
     setPoisonState,
+    setCurrentEnemies,
+    combatPhase, setCombatPhase,
+    setLastPlayerDamage, setLastEnemyDamages,
   } = useCombatStore()
 
   const derived = deriveStats(player.primary_stats)
+  const displayMaxHP = realMaxHP ?? derived.max_hp
   const availableSkills = BASE_SKILLS.filter(s =>
     (player.equipped_skills ?? []).includes(s.id) &&
     (!LOCKED_SKILLS.has(s.id) || (player.unlocked_skills ?? []).includes(s.id))
@@ -119,11 +118,30 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
   const depthMult = depthMultiplier(run.depth)
   const isTraining = boss.stats.attack === 0 && boss.loot_table.length === 0
 
+  const handleActionRef = useRef<(action: CombatAction, skill?: PlayerSkill, item?: any) => Promise<void>>(async () => {})
+
+  const items = useItemHandlers({
+    playerHP, playerStamina, playerMana,
+    maxHP: displayMaxHP, maxStamina: derived.max_stamina, maxMana: derived.max_mana,
+    setPlayerHP, setPlayerStamina, setPlayerMana,
+    handleAction: (...args) => handleActionRef.current(...args),
+  })
+
   useEffect(() => {
     initRun(dungeon.rooms)
-    setPlayerHP(player.current_hp ?? derived.max_hp)
     setPlayerStamina(derived.max_stamina)
     setPlayerMana(derived.max_mana)
+
+    // Fetchear el HP máximo real (con gear) desde el server para no mostrar valores incorrectos
+    getPlayerMaxHPAction().then((maxHP: number | null) => {
+      if (maxHP) {
+        setRealMaxHP(maxHP)
+        setPlayerHP(Math.min(player.current_hp ?? maxHP, maxHP))
+      } else {
+        setPlayerHP(player.current_hp ?? derived.max_hp)
+      }
+      setHpReady(true)
+    })
   }, [])
 
   useEffect(() => {
@@ -137,14 +155,29 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       instanceId: nextInstanceId(),
       enemy: { id: boss.id, dungeon_id: boss.dungeon_id, name: boss.name, stats: { ...boss.stats, hp: scaledMaxHP }, loot_table: [], enemy_type: boss.enemy_type },
       currentHP: scaledMaxHP, maxHP: scaledMaxHP, alive: true,
+      // aiState inicial: el servidor lo actualiza con updatedAiStates cada turno.
+      // Arranca con tier 'boss' y triggeredPhases vacío para que evaluateBossPhase
+      // pueda detectar el cruce de fases desde el primer turno.
+      aiState: { tier: 'boss', energy: 0, maxEnergy: 8, activePhaseOrder: 0, triggeredPhases: [] },
+      statMults: null,
     }
     setStunnedEnemyIds([])
     setBurnStates([])
-    initCombat(playerHP, playerStamina, playerMana, [bossState])
+
+    // Spawnear adds iniciales si el boss los tiene configurados
+    const combatEnemies: EnemyCombatState[] = [bossState]
+    if ((boss as any).initial_adds?.length) {
+      for (const enemyId of (boss as any).initial_adds as number[]) {
+        const template = enemies.find(e => e.id === enemyId)
+        if (template) combatEnemies.push(buildSummonedEnemy(template, depthMult))
+      }
+    }
+
+    initCombat(playerHP, playerStamina, playerMana, combatEnemies)
   }, [run.phase, run.currentEnemies.length, status])
 
   const isBossRoom = run.bossDefeated === false && run.currentRoom >= run.totalRooms && !fightingEvent
-  const playerHPPct = Math.max(0, Math.round((playerHP / derived.max_hp) * 100))
+  const playerHPPct = Math.max(0, Math.round((playerHP / displayMaxHP) * 100))
   const aliveEnemies = run.currentEnemies.filter(e => e.alive)
 
   const safeTargetIndex = (() => {
@@ -179,6 +212,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     else await handleRoomAction(action, skill, itemUsed)
     setIsProcessing(false)
   }
+  handleActionRef.current = handleAction
 
   async function handleRoomAction(action: CombatAction, skill?: PlayerSkill, itemUsed?: ItemUsed) {
     const enemyTurnStates: EnemyTurnState[] = run.currentEnemies.map(e => ({
@@ -186,104 +220,273 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       attack: Math.round(e.enemy.stats.attack * depthMult),
       defense: Math.round(e.enemy.stats.defense * depthMult),
       name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
+      aiState: e.aiState ?? null,
     }))
 
-    const result = await takeTurnAction({
+    // ── FASE 1: turno del jugador ──────────────────────────────────────────
+    setCombatPhase('player_acting')
+
+    const ptResult = await playerTurnAction({
       action, skillUsed: skill, itemUsed,
       currentPlayerHP: playerHP, currentPlayerStamina: playerStamina, currentPlayerMana: playerMana,
       enemies: enemyTurnStates, targetIndex: safeTargetIndex,
       isBlocking: action === 'block',
-      consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
-      stunnedEnemyIds, burnStates, poisonState: run.poisonState,
+      burnStates, poisonState: run.poisonState, statusEffects: run.statusEffects,
+      turn,
     })
 
-    if (!result.success) { addLog(result.error ?? 'Error desconocido'); return }
+    if (!ptResult.success) { addLog(ptResult.error ?? 'Error'); setCombatPhase('idle'); return }
 
-    result.log.forEach((e: string) => addLog(e))
-    setPlayerHP(result.newPlayerHP)
-    setPlayerStamina(result.newPlayerStamina)
-    setPlayerMana(result.newPlayerMana)
-    setConsecutiveBlocks(result.newConsecutiveBlocks)
-    setStunnedEnemyIds(result.newStunnedEnemyIds)
-    setBurnStates(result.newBurnStates)
-    setPoisonState(result.newPoisonState)
-    nextTurn()
+    // Log del jugador — render síncrono
+    flushSync(() => {
+      ptResult.log.forEach(m => addLog(m))
+      setPlayerStamina(ptResult.newPlayerStamina)
+      setPlayerMana(ptResult.newPlayerMana)
+      // Actualizar maxHP real (con gear) desde el server
+      if (ptResult.playerMaxHP > 0) setRealMaxHP(ptResult.playerMaxHP)
+    })
 
-    for (const [idStr, newHP] of Object.entries(result.updatedEnemyHPs)) {
-      setEnemyHP(Number(idStr), newHP)
+    // ── Fix: animación ANTES de marcar alive:false ───────────────────────────
+    // 1. Actualizar solo HP (alive sigue true para que el sprite se vea)
+    const hitDuration = (ptResult.isCritical || ptResult.isOvercrit) ? 600 : 400
+    const enemiesHPOnly = run.currentEnemies.map(e => {
+      const newHP = ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP
+      return { ...e, currentHP: Math.max(0, newHP) }
+      // alive NO se cambia todavía
+    })
+    setCurrentEnemies(enemiesHPOnly)
+
+    // 2. Animación hit/crit en el objetivo
+    const targetState = enemyTurnStates[safeTargetIndex]
+    if (targetState && ptResult.damageDealt > 0) {
+      triggerEnemyAnim(targetState.instanceId, ptResult.isCritical || ptResult.isOvercrit ? 'crit' : 'hit', hitDuration)
+      spawnFloat(targetState.instanceId, ptResult.damageDealt, ptResult.isCritical || ptResult.isOvercrit, false)
     }
 
-    for (const instanceId of result.defeatedEnemyInstanceIds) {
-      const fallen = run.currentEnemies.find(e => e.instanceId === instanceId)
-      if (!fallen) continue
-      const loot = resolveEnemyLoot(fallen.enemy, depthMult)
-      addLoot({ exp: loot.exp, gold: loot.gold, items: loot.itemId ? [loot.itemId] : [] })
-      setLastLoot({ exp: loot.exp, gold: loot.gold, itemId: loot.itemId, itemName: loot.itemName })
-      registerKillAction({ enemyTypes: fallen.enemy.enemy_type as EnemyType[], hasWeaponEquipped: true, isBossKill: false, dungeonId: dungeon.id })
+    // 3. Después de la animación hit → animación dead → marcar alive:false
+    for (const id of ptResult.defeatedEnemyInstanceIds) {
+      const fallen = run.currentEnemies.find(e => e.instanceId === id)
+      if (fallen) {
+        flushSync(() => addLog(`🏆 ¡Derrotaste a ${fallen.enemy.name}!`))
+        registerKillAction({ enemyTypes: fallen.enemy.enemy_type as EnemyType[], hasWeaponEquipped: true, isBossKill: false, dungeonId: dungeon.id })
+      }
+      // Primero dead anim, luego marcar alive:false
+      // Usamos función de estado en setCurrentEnemies para evitar closures stale
+      const idToKill = id
+      setTimeout(() => {
+        triggerEnemyAnim(idToKill, 'dead')
+        setTimeout(() => {
+          setCurrentEnemies(prev =>
+            prev.map(e => e.instanceId === idToKill ? { ...e, alive: false } : e)
+          )
+        }, 50)
+      }, hitDuration)
     }
 
-    if (result.defeatedEnemyInstanceIds.includes(targetEnemy?.instanceId ?? -1)) {
-      const nextAlive = run.currentEnemies.findIndex(
-        (e, i) => i !== safeTargetIndex && e.alive && !result.defeatedEnemyInstanceIds.includes(e.instanceId)
+    // 4. Construir updatedEnemies con alive correcto (para lógica de continuación)
+    const updatedEnemies = enemiesHPOnly.map(e => ({
+      ...e,
+      alive: (ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) > 0,
+    }))
+
+    // Cambiar target si el actual murió
+    if (ptResult.defeatedEnemyInstanceIds.includes(targetEnemy?.instanceId ?? -1)) {
+      const nextAlive = updatedEnemies.findIndex(
+        (e, i) => i !== safeTargetIndex && e.alive && !ptResult.defeatedEnemyInstanceIds.includes(e.instanceId)
       )
       if (nextAlive >= 0) setTargetIndex(nextAlive)
     }
 
-    if (result.allEnemiesDefeated) {
+    // Calcular loot UNA sola vez y guardarlo (evita doble conteo)
+    let totalExp = 0, totalGold = 0
+    const modalItems: { itemId: number; itemName: string; sprite?: string }[] = []
+    for (const id of ptResult.defeatedEnemyInstanceIds) {
+      const fallen = run.currentEnemies.find(e => e.instanceId === id)
+      if (!fallen) continue
+      const loot = resolveEnemyLoot(fallen.enemy, depthMult)
+      totalExp  += loot.exp
+      totalGold += loot.gold
+      addLoot({ exp: loot.exp, gold: loot.gold, items: loot.itemId ? [loot.itemId] : [] })
+      setLastLoot({ exp: loot.exp, gold: loot.gold, itemId: loot.itemId, itemName: loot.itemName })
+      if (loot.itemId && loot.itemName) {
+        modalItems.push({ itemId: loot.itemId, itemName: loot.itemName, sprite: (loot as any).itemSprite ?? undefined })
+      }
+    }
+
+    const allDefeatedByPlayer = updatedEnemies.every(e => !e.alive)
+    if (allDefeatedByPlayer) {
+      // Esperar que la animación de muerte termine
+      await new Promise(r => setTimeout(r, hitDuration + 800))
+      nextTurn()
+      setCombatPhase('idle')
       setStatus('victory')
-      setTimeout(() => {
-        if (fightingEvent) {
-          setFightingEvent(false)
-          setCurrentEvent(null)
-          setStatus('idle')
-          setPhase('between_rooms')
-        } else {
-          advanceRoom()
-          if (!run.bossDefeated) setCurrentEvent(rollRoomEvent())
-          setStatus('idle'); setPhase('between_rooms')
-        }
-      }, 1200)
-    } else if (result.playerDefeated) {
+      setEnemyAnimStates({})
+      setVictoryModal({ type: 'room', exp: totalExp, gold: totalGold, items: modalItems })
+      return
+    }
+
+    // Pausa entre turnos
+    await new Promise(r => setTimeout(r, ptResult.isCritical ? 700 : 500))
+
+    // ── FASE 2: turno del enemigo ──────────────────────────────────────────
+    setCombatPhase('enemy_acting')
+    await new Promise(r => setTimeout(r, 200))
+
+    const alreadyDefeated = new Set(ptResult.defeatedEnemyInstanceIds)
+    const enemyStatesAfter = updatedEnemies
+      .filter(e => e.alive && !alreadyDefeated.has(e.instanceId))
+      .map(e => ({
+        instanceId: e.instanceId,
+        currentHP: ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP,
+        maxHP: e.maxHP, alive: e.alive,
+        attack: Math.round(e.enemy.stats.attack * depthMult),
+        defense: Math.round(e.enemy.stats.defense * depthMult),
+        name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
+        aiState: ptResult.updatedAiStates[e.instanceId] ?? e.aiState ?? null,
+      }))
+
+    const etResult = await enemyTurnAction({
+      currentPlayerHP: ptResult.newPlayerHP,
+      currentPlayerStamina: ptResult.newPlayerStamina,
+      currentPlayerMana: ptResult.newPlayerMana,
+      enemies: enemyStatesAfter,
+      isBlocking: action === 'block',
+      consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
+      stunnedEnemyIds, burnStates, poisonState: run.poisonState,
+      statusEffects: run.statusEffects,
+      turn,
+      phaseTriggeredThisTurn: false,
+    })
+
+    if (!etResult.success) { addLog(etResult.error ?? 'Error'); setCombatPhase('idle'); return }
+
+    // Animación: jugador recibe daño
+    const totalDmg = Object.values(etResult.damageByEnemy).reduce((s, d) => s + d, 0)
+    if (totalDmg > 0) {
+      triggerPlayerAnim('hit', 500)
+      spawnFloat(-1, totalDmg, false, true)
+    }
+
+    await new Promise(r => setTimeout(r, 400))
+
+    emitAiDebugLogs(etResult.aiDebugLogs ?? [])
+    flushSync(() => {
+      addLog('─────────────────')
+      etResult.log.forEach(m => addLog(m))
+    })
+
+    setPlayerHP(etResult.newPlayerHP)
+    setConsecutiveBlocks(etResult.newConsecutiveBlocks)
+    setStunnedEnemyIds(etResult.newStunnedEnemyIds)
+    setBurnStates(etResult.newBurnStates)
+    setPoisonState(etResult.newPoisonState)
+    nextTurn()
+    setCombatPhase('idle')
+
+    if (etResult.playerDefeated) {
       setStatus('defeat')
       saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1 })
     }
   }
 
-  async function handleBossAction(action: CombatAction, skill?: PlayerSkill, itemUsed?: ItemUsed) {
-    if (!bossEnemyState) return
-    const scaledAtk  = Math.round(boss.stats.attack  * (run.depth > 0 ? depthMult : 1))
-    const scaledDef  = Math.round(boss.stats.defense * (run.depth > 0 ? depthMult : 1))
-
-    const result = await takeTurnAction({
-      action, skillUsed: skill, itemUsed,
-      currentPlayerHP: playerHP, currentPlayerStamina: playerStamina, currentPlayerMana: playerMana,
-      enemies: [{ instanceId: bossEnemyState.instanceId, currentHP: bossEnemyState.currentHP, maxHP: bossEnemyState.maxHP, alive: bossEnemyState.alive, attack: scaledAtk, defense: scaledDef, name: boss.name, enemyTypes: boss.enemy_type as EnemyType[] }],
-      targetIndex: 0, isBlocking: action === 'block',
-      consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
-      stunnedEnemyIds: [], burnStates, poisonState: run.poisonState,
-    })
-
-    if (!result.success) { addLog(result.error ?? 'Error desconocido'); return }
-
-    result.log.forEach((e: string) => addLog(e))
-    setPlayerHP(result.newPlayerHP)
-    setPlayerStamina(result.newPlayerStamina)
-    setPlayerMana(result.newPlayerMana)
-    setConsecutiveBlocks(result.newConsecutiveBlocks)
-    setBurnStates(result.newBurnStates)
-    setPoisonState(result.newPoisonState)
-    if (isTraining) { setPlayerStamina(derived.max_stamina); setPlayerMana(derived.max_mana) }
-    nextTurn()
-    setEnemyHP(bossEnemyState.instanceId, result.updatedEnemyHPs[bossEnemyState.instanceId] ?? bossEnemyState.currentHP)
-
-    if (result.allEnemiesDefeated) {
-      if (fightingEvent && granGoblinBoss) {
-        addLoot({ items: resolveBossLoot(granGoblinBoss, 0, 0).items })
-        addLog('🏆 ¡Derrotaste al Gran Goblin! Item asegurado obtenido.')
-        setFightingEvent(false); setGranGoblinBoss(null); setCurrentEvent(null); setStatus('victory')
-        setTimeout(() => { setStatus('idle'); setPhase('between_rooms') }, 1200)
-        return
+  // ─── Helper: construir EnemyTurnStates del boss room ────────────────────────
+  function buildBossEnemyStates(): EnemyTurnState[] {
+    if (!bossEnemyState) return []
+    const scaledAtk = Math.round(boss.stats.attack  * (run.depth > 0 ? depthMult : 1))
+    const scaledDef = Math.round(boss.stats.defense * (run.depth > 0 ? depthMult : 1))
+    return run.currentEnemies.map(e => {
+      const isBossEntity = e.instanceId === bossEnemyState.instanceId
+      return {
+        instanceId: e.instanceId, currentHP: e.currentHP, maxHP: e.maxHP, alive: e.alive,
+        attack: isBossEntity ? scaledAtk : Math.round(e.enemy.stats.attack * depthMult),
+        defense: isBossEntity ? scaledDef : Math.round(e.enemy.stats.defense * depthMult),
+        name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
+        aiState: e.aiState ?? null,
       }
+    })
+  }
+
+  // ─── Helper: aplicar resultado de enemigos al store ───────────────────────
+  function applyEnemyUpdates(
+    updatedEnemyHPs: Record<number, number>,
+    updatedAiStatesMap: Record<number, EnemyAiState>,
+    summonIds: number[],
+    baseEnemies: EnemyCombatState[],
+    alreadyDeadIds: number[] = [],
+  ) {
+    // Usar función de estado para leer el alive actual del store
+    // y no pisar alive:false que ya fue escrito por los timeouts de animación
+    setCurrentEnemies((prev: EnemyCombatState[]) => {
+      let updated = prev.map(e => {
+        // Si el store ya lo marcó muerto (por timeout), respetar ese estado
+        if (!e.alive) return e
+        // Si está en alreadyDeadIds, marcarlo muerto
+        if (alreadyDeadIds.includes(e.instanceId)) return { ...e, currentHP: 0, alive: false }
+        // Aplicar HP actualizado por efectos
+        const newHP = updatedEnemyHPs[e.instanceId] ?? e.currentHP
+        return { ...e, currentHP: Math.max(0, newHP), alive: newHP > 0 }
+      })
+      // Aplicar aiStates
+      if (Object.keys(updatedAiStatesMap).length > 0) {
+        updated = updated.map(e => {
+          const newAiState = updatedAiStatesMap[e.instanceId]
+          return newAiState ? { ...e, aiState: newAiState } : e
+        })
+      }
+      // Agregar summons
+      for (const enemyId of summonIds) {
+        const template = enemies.find(e => e.id === enemyId)
+        if (!template) continue
+        const summoned = buildSummonedEnemy(template, depthMult)
+        updated = [...updated, summoned]
+        addLog(`👹 ¡${summoned.enemy.name} entra al combate!`)
+      }
+      return updated
+    })
+    // Retornar baseEnemies actualizado para uso local (lógica de victoria, etc.)
+    return baseEnemies.map(e => {
+      if (alreadyDeadIds.includes(e.instanceId)) return { ...e, currentHP: 0, alive: false }
+      const newHP = updatedEnemyHPs[e.instanceId] ?? e.currentHP
+      return { ...e, currentHP: Math.max(0, newHP), alive: newHP > 0 }
+    })
+  }
+
+  // ─── Helper: emitir logs de IA al panel visual (solo dev) ─────────────────
+  function emitAiDebugLogs(logs: Array<{ tier: string; enemyName: string; data: Record<string, unknown> }>) {
+    if (process.env.NODE_ENV !== 'development' || !logs.length) return
+    aiDebugAccRef.current = [...aiDebugAccRef.current.slice(-49), ...logs]
+    setAiDebugTick(t => t + 1)
+  }
+
+  // ─── Helper: resolver victoria/derrota ───────────────────────────────────
+  function resolveOutcome(allDefeated: boolean, playerDef: boolean, newHP: number) {
+    if (allDefeated) {
+      // Gran Goblin (evento especial)
+      if (fightingEvent && granGoblinBoss) {
+        const loot = resolveBossLoot(granGoblinBoss, 0, 0)
+        addLoot({ items: loot.items })
+        addLog('🏆 ¡Derrotaste al Gran Goblin!')
+        setFightingEvent(false); setGranGoblinBoss(null); setCurrentEvent(null)
+        setStatus('victory')
+        const modalItems = loot.itemDetails.map((d, i) => ({ itemId: loot.items[i] ?? 0, itemName: d.name, sprite: d.sprite }))
+        setVictoryModal({ type: 'room', exp: 0, gold: 0, items: modalItems })
+        return true
+      }
+
+      // Mímico (evento especial — gold del cofre se suma al derrotarlo)
+      if (fightingEvent && !granGoblinBoss) {
+        if (mimicPendingGold > 0) {
+          addLoot({ gold: mimicPendingGold })
+          addLog(`💰 ¡Encontraste ${mimicPendingGold} gold en el cofre del Mímico!`)
+        }
+        addLog('🏆 ¡Derrotaste al Mímico!')
+        setFightingEvent(false); setCurrentEvent(null); setMimicPendingGold(0)
+        setStatus('victory')
+        setVictoryModal({ type: 'room', exp: 0, gold: mimicPendingGold, items: [] })
+        return true
+      }
+
+      // Training dummy
       if (isTraining) {
         addLog('💪 ¡El dummy fue destruido! Respawneando...')
         setTimeout(() => {
@@ -291,61 +494,288 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
           const newDummy: EnemyCombatState = {
             instanceId: nextInstanceId(),
             enemy: { id: boss.id, dungeon_id: boss.dungeon_id, name: boss.name, stats: { ...boss.stats, hp: scaledMaxHP }, loot_table: [], enemy_type: boss.enemy_type },
-            currentHP: scaledMaxHP, maxHP: scaledMaxHP, alive: true,
+            currentHP: scaledMaxHP, maxHP: scaledMaxHP, alive: true, aiState: null, statMults: null,
           }
           setConsecutiveBlocks(0); setStunnedEnemyIds([]); setBurnStates([])
           initCombat(playerHP, playerStamina, playerMana, [newDummy])
-          setPlayerHP(result.newPlayerHP); setPlayerStamina(result.newPlayerStamina); setPlayerMana(result.newPlayerMana)
         }, 1000)
-        return
+        return true
       }
+
+      // Boss real
       const bossLoot = resolveBossLoot(boss)
-      const totalExp  = run.accumulatedLoot.exp  + bossLoot.exp
-      const totalGold = run.accumulatedLoot.gold + bossLoot.gold
+      const totalExp   = run.accumulatedLoot.exp  + bossLoot.exp
+      const totalGold  = run.accumulatedLoot.gold + bossLoot.gold
       const totalItems = [...run.accumulatedLoot.items, ...bossLoot.items]
-      setBossDrops(bossLoot.itemDetails)
       addLoot({ exp: bossLoot.exp, gold: bossLoot.gold, items: bossLoot.items })
-      setBossDefeated(true); setStatus('victory'); setPhase('results')
+      setBossDefeated(true)
+      setStatus('victory')
       registerKillAction({ enemyTypes: boss.enemy_type ?? [], hasWeaponEquipped: true, isBossKill: true, dungeonId: dungeon.id })
-      saveRunAction({ outcome: 'victory', exp: totalExp, gold: totalGold, items: totalItems, currentHP: result.newPlayerHP })
-    } else if (result.playerDefeated) {
+      saveRunAction({ outcome: 'victory', exp: totalExp, gold: totalGold, items: totalItems, currentHP: newHP })
+
+      // Construir items para el modal
+      const modalItems = bossLoot.itemDetails.map((d, i) => ({
+        itemId: bossLoot.items[i] ?? 0,
+        itemName: d.name,
+        sprite: d.sprite,
+      }))
+      // Limpiar animStates de enemigos muertos al mostrar el modal
+      setEnemyAnimStates({})
+      setVictoryModal({ type: 'boss', exp: bossLoot.exp, gold: bossLoot.gold, items: modalItems })
+      return true
+    }
+
+    if (playerDef) {
       setStatus('defeat')
       saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1 })
+      return true
+    }
+    return false
+  }
+
+  // ── Handlers del modal de victoria ────────────────────────────────────────
+
+  function handleRoomModalContinue() {
+    setVictoryModal(null)
+    setStatus('idle')
+    if (fightingEvent) {
+      setFightingEvent(false); setCurrentEvent(null)
+      setPhase('between_rooms')
+    } else {
+      advanceRoom()
+      if (!run.bossDefeated) setCurrentEvent(rollRoomEvent())
+      setPhase('between_rooms')
     }
   }
 
-  // ─── Items ────────────────────────────────────────────────────────────────
-
-  async function handleOpenItems() {
-    setLoadingItems(true)
-    const { items } = await getConsumablesAction()
-    setConsumables(items); setLoadingItems(false); setShowItems(true)
+  function handleBossModalContinue() {
+    setVictoryModal(null)
+    setStatus('idle')
+    increaseDepth()
+    setBossDefeated(true)
+    setPhase('between_rooms')
   }
 
-  async function handleUseItem(entryId: number) {
-    const entry = consumables.find(e => e.id === entryId)
-    if (!entry) return
-    setConsumables(prev => prev.map(e => e.id === entryId ? { ...e, quantity: e.quantity - 1 } : e).filter(e => e.quantity > 0))
-    setShowItems(false)
-    await handleAction('item', undefined, { entryId, name: entry.item.name, effect: entry.item.effect ?? {} })
+  async function handleBossModalExit() {
+    setIsSaving(true)
+    setVictoryModal(null)
+    await clearRunAction(playerHP)
+    router.replace('/hub')
   }
 
-  async function handleOpenRestConsumables() {
-    setLoadingRestItems(true)
-    const { items } = await getConsumablesAction()
-    setRestConsumables(items); setLoadingRestItems(false); setShowRestConsumables(true)
+  async function handleBossAction(action: CombatAction, skill?: PlayerSkill, itemUsed?: ItemUsed) {
+    if (!bossEnemyState) return
+
+    // ── FASE 1: turno del jugador ──────────────────────────────────────────
+    setCombatPhase('player_acting')
+    const enemyStates = buildBossEnemyStates()
+
+    const ptResult = await playerTurnAction({
+      action, skillUsed: skill, itemUsed,
+      currentPlayerHP: playerHP, currentPlayerStamina: playerStamina, currentPlayerMana: playerMana,
+      enemies: enemyStates, targetIndex: safeTargetIndex,
+      isBlocking: action === 'block',
+      burnStates, poisonState: run.poisonState, statusEffects: run.statusEffects,
+      bossId: boss.id, turn,
+    })
+
+    if (!ptResult.success) { addLog(ptResult.error ?? 'Error'); setCombatPhase('idle'); setIsProcessing(false); return }
+
+    // Log del jugador — flushSync fuerza render síncrono antes del turno enemigo
+    flushSync(() => {
+      ptResult.log.forEach(m => addLog(m))
+      setPlayerStamina(ptResult.newPlayerStamina)
+      setPlayerMana(ptResult.newPlayerMana)
+      if (ptResult.playerMaxHP > 0) setRealMaxHP(ptResult.playerMaxHP)
+    })
+
+    // ── Animación hit/crit ANTES de marcar alive:false ──────────────────────
+    const hitDurationBoss = (ptResult.isCritical || ptResult.isOvercrit) ? 600 : 400
+
+    // Animar el objetivo (puede ser el boss o un add)
+    const bossTargetId = run.currentEnemies[safeTargetIndex]?.instanceId ?? bossEnemyState.instanceId
+    if (ptResult.damageDealt > 0) {
+      triggerEnemyAnim(bossTargetId, ptResult.isCritical || ptResult.isOvercrit ? 'crit' : 'hit', hitDurationBoss)
+      spawnFloat(bossTargetId, ptResult.damageDealt, ptResult.isCritical || ptResult.isOvercrit, false)
+    }
+
+    // Actualizar HPs sin tocar alive (para que el sprite se vea durante la animación)
+    const enemiesHPOnlyBoss = run.currentEnemies.map(e => {
+      const newHP = ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP
+      return { ...e, currentHP: Math.max(0, newHP) }
+    })
+    // Aplicar aiStates y adds, pero preservar alive=true por ahora
+    let enemiesAfterPlayer = enemiesHPOnlyBoss.map(e => {
+      const newAiState = ptResult.updatedAiStates[e.instanceId]
+      return newAiState ? { ...e, aiState: newAiState } : e
+    })
+
+    // Agregar adds invocados
+    if (ptResult.summonEnemyIds.length > 0) {
+      for (const enemyId of ptResult.summonEnemyIds) {
+        const template = enemies.find(e => e.id === enemyId)
+        if (!template) continue
+        const summoned = buildSummonedEnemy(template, depthMult)
+        enemiesAfterPlayer = [...enemiesAfterPlayer, summoned]
+        addLog(`👹 ¡${summoned.enemy.name} entra al combate!`)
+      }
+    }
+    setCurrentEnemies(enemiesAfterPlayer)
+
+    // Construir lista completa de muertos ESTE turno:
+    // - Los que el servidor identificó por instanceId
+    // - Adds con HP<=0 que el servidor no conoce por instanceId (generados en el cliente)
+    // Excluir enemigos que ya estaban muertos ANTES de este turno (!e.alive en run.currentEnemies)
+    const alreadyDeadBeforeTurn = new Set(run.currentEnemies.filter(e => !e.alive).map(e => e.instanceId))
+    const clientDefeatedIds = [...ptResult.defeatedEnemyInstanceIds]
+    for (const e of enemiesAfterPlayer) {
+      if (alreadyDeadBeforeTurn.has(e.instanceId)) continue
+      const resultHP = ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP
+      if (resultHP <= 0 && !clientDefeatedIds.includes(e.instanceId)) {
+        clientDefeatedIds.push(e.instanceId)
+      }
+    }
+
+    // Log y loot de derrotados
+    for (const id of clientDefeatedIds) {
+      const fallen = run.currentEnemies.find(e => e.instanceId === id)
+        ?? enemiesAfterPlayer.find(e => e.instanceId === id)
+      if (fallen) {
+        flushSync(() => addLog(`🏆 ¡Derrotaste a ${fallen.enemy.name}!`))
+        const loot = resolveEnemyLoot(fallen.enemy, depthMult)
+        addLoot({ exp: loot.exp, gold: loot.gold, items: loot.itemId ? [loot.itemId] : [] })
+      }
+      const idToKill = id
+      setTimeout(() => {
+        triggerEnemyAnim(idToKill, 'dead')
+        setTimeout(() => {
+          setCurrentEnemies((prev: EnemyCombatState[]) =>
+            prev.map(e => e.instanceId === idToKill ? { ...e, alive: false } : e)
+          )
+        }, 750)
+      }, hitDurationBoss)
+    }
+
+    // Pausa para que el jugador vea su daño antes del contraataque
+    await new Promise(r => setTimeout(r, hitDurationBoss + 100))
+
+    // Para lógica de victoria usar HP actualizado (alive aún es true para la animación)
+    const allDefeatedByPlayer = enemiesAfterPlayer.every(e =>
+      (ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) <= 0 ||
+      clientDefeatedIds.includes(e.instanceId)
+    )
+
+    if (allDefeatedByPlayer) {
+      await new Promise(r => setTimeout(r, 500))
+      nextTurn()
+      setCombatPhase('idle')
+      resolveOutcome(true, false, ptResult.newPlayerHP)
+      return
+    }
+
+    // Si hubo fase: pausa dramática antes del turno enemigo
+    if (ptResult.phaseTriggered) {
+      setCombatPhase('phase_transition')
+      await new Promise(r => setTimeout(r, 800))
+    }
+
+    // ── FASE 2: turno del enemigo ──────────────────────────────────────────
+    setCombatPhase('enemy_acting')
+    await new Promise(r => setTimeout(r, 300))
+
+    // Reconstruir estados con los HPs ya actualizados
+    // Solo pasar enemigos que siguen vivos después del turno del jugador
+    const alreadyDefeated = new Set(clientDefeatedIds)
+    const enemyStatesAfter = enemiesAfterPlayer
+      .filter(e => e.alive && (ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) > 0 && !alreadyDefeated.has(e.instanceId))
+      .map(e => {
+        const isBossEntity = e.instanceId === bossEnemyState.instanceId
+        const scaledAtk = Math.round(boss.stats.attack  * (run.depth > 0 ? depthMult : 1))
+        const scaledDef = Math.round(boss.stats.defense * (run.depth > 0 ? depthMult : 1))
+        return {
+          instanceId: e.instanceId,
+          currentHP: ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP,
+          maxHP: e.maxHP, alive: e.alive,
+          attack: isBossEntity ? scaledAtk : Math.round(e.enemy.stats.attack * depthMult),
+          defense: isBossEntity ? scaledDef : Math.round(e.enemy.stats.defense * depthMult),
+          name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
+          aiState: ptResult.updatedAiStates[e.instanceId] ?? e.aiState ?? null,
+        }
+      })
+
+    const etResult = await enemyTurnAction({
+      currentPlayerHP: ptResult.newPlayerHP,
+      currentPlayerStamina: ptResult.newPlayerStamina,
+      currentPlayerMana: ptResult.newPlayerMana,
+      enemies: enemyStatesAfter,
+      isBlocking: action === 'block',
+      consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
+      stunnedEnemyIds: [], burnStates, poisonState: run.poisonState,
+      statusEffects: run.statusEffects,
+      bossId: boss.id, turn,
+      phaseTriggeredThisTurn: ptResult.phaseTriggered,
+    })
+
+    if (!etResult.success) { addLog(etResult.error ?? 'Error'); setCombatPhase('idle'); setIsProcessing(false); return }
+
+    // Animación: jugador recibe daño
+    const totalDmgToPlayer = Object.values(etResult.damageByEnemy).reduce((s, d) => s + d, 0)
+    if (totalDmgToPlayer > 0) {
+      triggerPlayerAnim('hit', 500)
+      spawnFloat(-1, totalDmgToPlayer, false, true)
+    }
+
+    // Pausa para que se vea la animación del golpe
+    await new Promise(r => setTimeout(r, 450))
+
+    // Turno enemigo — flushSync para render síncrono separado del turno del jugador
+    emitAiDebugLogs(etResult.aiDebugLogs ?? [])
+    flushSync(() => {
+      addLog('─────────────────')
+      etResult.log.forEach(m => addLog(m))
+    })
+    setPlayerHP(etResult.newPlayerHP)
+    setConsecutiveBlocks(etResult.newConsecutiveBlocks)
+    setBurnStates(etResult.newBurnStates)
+    setPoisonState(etResult.newPoisonState)
+    if (isTraining) { setPlayerStamina(derived.max_stamina); setPlayerMana(derived.max_mana) }
+    nextTurn()
+
+    // Actualizar HPs enemigos por efectos (burn, etc.) y marcar muertos
+    const allDeadIds = [...clientDefeatedIds, ...etResult.defeatedByEffects]
+    if (Object.keys(etResult.updatedEnemyHPs).length > 0 || Object.keys(etResult.updatedAiStates).length > 0 || allDeadIds.length > 0) {
+      applyEnemyUpdates(etResult.updatedEnemyHPs, etResult.updatedAiStates, [], enemiesAfterPlayer, allDeadIds)
+    }
+
+    // Animar dead para enemigos que murieron por efectos del turno enemigo
+    for (const id of etResult.defeatedByEffects) {
+      const idToKill = id
+      triggerEnemyAnim(idToKill, 'dead')
+      setTimeout(() => {
+        setCurrentEnemies(prev =>
+          prev.map(e => e.instanceId === idToKill ? { ...e, alive: false } : e)
+        )
+      }, 750)
+    }
+
+    setCombatPhase('idle')
+
+    const allDefeated = enemiesAfterPlayer.every(e =>
+      (etResult.updatedEnemyHPs[e.instanceId] ?? ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) <= 0
+    )
+    resolveOutcome(allDefeated, etResult.playerDefeated, etResult.newPlayerHP)
   }
 
-  async function handleUseRestItem(entryId: number) {
-    setUsingRestItem(true)
-    const result = await useItemAction(entryId)
-    if (!result.success) { setUsingRestItem(false); return }
-    if (result.healHP > 0)      setPlayerHP(Math.min(playerHP + result.healHP, derived.max_hp))
-    if (result.healStamina > 0) setPlayerStamina(Math.min(playerStamina + result.healStamina, derived.max_stamina))
-    if (result.healMana > 0)    setPlayerMana(Math.min(playerMana + result.healMana, derived.max_mana))
-    setRestConsumables(prev => prev.map(e => e.id === entryId ? { ...e, quantity: e.quantity - 1 } : e).filter(e => e.quantity > 0))
-    setUsingRestItem(false)
-  }
+  // ─── Items — ver hooks/useItemHandlers.ts ─────────────────────────────────
+
+  const {
+    showItems, setShowItems,
+    consumables, loadingItems,
+    handleOpenItems, handleUseItem,
+    showRestConsumables, setShowRestConsumables,
+    restConsumables, loadingRestItems, usingRestItem,
+    handleOpenRestConsumables, handleUseRestItem,
+  } = items
 
   async function handleReturnToHub() {
     await clearRunAction(playerHP); router.replace('/hub')
@@ -360,17 +790,19 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
   // ─── Pantallas ────────────────────────────────────────────────────────────
 
   if (run.phase === 'between_rooms') {
+    if (!hpReady) return null
     return (
       <BetweenRoomsScreen
         player={player} dungeon={dungeon} boss={boss} enemies={enemies}
         playerHP={playerHP} playerStamina={playerStamina} playerMana={playerMana}
-        run={run} derived={derived} itemInfoMap={itemInfoMap}
+        run={run} derived={{ ...derived, max_hp: displayMaxHP }} itemInfoMap={itemInfoMap}
         lastLoot={lastLoot} isSaving={isSaving}
         setPlayerHP={setPlayerHP} setPlayerStamina={setPlayerStamina} setPlayerMana={setPlayerMana}
         setPhase={setPhase} setCurrentEnemy={setCurrentEnemy}
         initCombat={initCombat} setStunnedEnemyIds={setStunnedEnemyIds} setBurnStates={setBurnStates}
         addLoot={addLoot} advanceRoom={advanceRoom} setCurrentEvent={setCurrentEvent} setPoisonState={setPoisonState}
-        setFightingEvent={setFightingEvent} granGoblinBoss={granGoblinBoss} setGranGoblinBoss={setGranGoblinBoss}
+        setFightingEvent={setFightingEvent} setMimicPendingGold={setMimicPendingGold}
+        granGoblinBoss={granGoblinBoss} setGranGoblinBoss={setGranGoblinBoss}
         nextInstanceId={nextInstanceId} buildEnemyCombatStates={buildEnemyCombatStates}
         onOpenRestConsumables={handleOpenRestConsumables}
         onUseRestItem={handleUseRestItem}
@@ -393,184 +825,85 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
   }
 
   if (run.phase === 'boss' && run.currentEnemies.length === 0) return null
+  if (!hpReady) return null
 
   // ─── Pantalla de combate ──────────────────────────────────────────────────
   return (
-    <div className="min-h-screen flex" style={{
-      backgroundImage: `url(/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'})`,
-      backgroundSize: 'cover', backgroundPosition: 'center',
-    }}>
-      <div className="flex-1 flex items-center justify-center p-4">
-        <div className="flex flex-col gap-3 items-center">
-          {run.currentEnemies.map((e, idx) => {
-            if (!e.alive) return null
-            const isTarget = idx === safeTargetIndex
-            const hpPct = Math.max(0, Math.round((e.currentHP / e.maxHP) * 100))
-            return (
-              <button key={e.instanceId} onClick={() => !isProcessing && status === 'active' && setTargetIndex(idx)} disabled={isProcessing || status !== 'active'}
-                className={`bg-black/40 rounded-xl p-3 flex flex-col items-center gap-1 transition w-36 ${isTarget ? 'ring-2 ring-yellow-400 ring-offset-1 ring-offset-transparent' : 'hover:bg-black/60'} ${!isProcessing && status === 'active' ? 'cursor-pointer' : 'cursor-default'}`}
-              >
-                {isBossRoom && <span className="text-xs bg-red-800 text-red-300 px-2 py-0.5 rounded font-bold">BOSS</span>}
-                <img src="/sprites/enemies/SlimeBase_512x512.png" alt={e.enemy.name} className={`w-24 h-24 object-contain transition-opacity ${isTarget ? 'opacity-100' : 'opacity-60'}`} style={{ imageRendering: 'pixelated' }} />
-                <span className={`text-xs font-bold text-center ${isBossRoom ? 'text-red-400' : 'text-red-300'}`}>
-                  {e.enemy.name}{isTarget && ' 🎯'}{burnStates.some(b => b.instanceId === e.instanceId) && ' 🔥'}
-                </span>
-                <div className="w-full bg-gray-600 rounded-full h-1.5 mt-1">
-                  <div className={`h-1.5 rounded-full transition-all ${isBossRoom ? 'bg-red-600' : 'bg-red-400'}`} style={{ width: `${hpPct}%` }} />
-                </div>
-                <span className="text-xs text-gray-400">{e.currentHP}/{e.maxHP}</span>
-              </button>
-            )
-          })}
-        </div>
-      </div>
+    <>
+      {/* Keyframes de animación — inyectados una sola vez */}
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          20% { transform: translateX(-6px) rotate(-1deg); }
+          40% { transform: translateX(6px) rotate(1deg); }
+          60% { transform: translateX(-4px); }
+          80% { transform: translateX(4px); }
+        }
+        @keyframes shakeHard {
+          0%, 100% { transform: translateX(0) scale(1); }
+          15% { transform: translateX(-10px) scale(1.05) rotate(-2deg); }
+          30% { transform: translateX(10px) scale(1.05) rotate(2deg); }
+          45% { transform: translateX(-7px) scale(1.02); }
+          60% { transform: translateX(7px) scale(1.02); }
+          75% { transform: translateX(-4px); }
+          90% { transform: translateX(4px); }
+        }
+        @keyframes floatUp {
+          0%   { transform: translateX(-50%) translateY(0);   opacity: 1; }
+          70%  { transform: translateX(-50%) translateY(-28px); opacity: 1; }
+          100% { transform: translateX(-50%) translateY(-44px); opacity: 0; }
+        }
+        @keyframes fadeInUp {
+          0%   { opacity: 0; transform: translateY(16px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        .animate-shake      { animation: shake 0.4s ease-in-out; }
+        .animate-shake-hard { animation: shakeHard 0.6s ease-in-out; }
+        .animate-fade-in    { animation: fadeInUp 0.35s ease-out forwards; }
+        @keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp  { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
 
-      <div className="w-full max-w-xl min-h-screen text-white p-4 flex flex-col gap-4" style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}>
-        <div className="flex justify-between items-center">
-          <h1 className="text-xl font-bold text-yellow-500">{dungeon.name}</h1>
-          <span className="text-gray-400 text-sm">
-            {isBossRoom ? '💀 Boss' : run.bossDefeated ? `⚔️ Prof. ${run.depth}` : `Sala ${Math.min(run.currentRoom + 1, run.totalRooms)}/${run.totalRooms}`} · Turno {turn}
-          </span>
-        </div>
+      <CombatScreen
+        player={player} dungeon={dungeon} boss={boss}
+        playerHP={playerHP} playerStamina={playerStamina} playerMana={playerMana}
+        turn={turn} log={log} status={status} run={run} derived={{ ...derived, max_hp: displayMaxHP }}
+        isProcessing={isProcessing} isSaving={isSaving}
+        isBossRoom={isBossRoom} isTraining={isTraining}
+        safeTargetIndex={safeTargetIndex} aliveEnemies={aliveEnemies}
+        targetEnemy={targetEnemy}
+        consecutiveBlocks={consecutiveBlocks} burnStates={burnStates}
+        availableSkills={availableSkills}
+        showSkills={showSkills} showItems={showItems}
+        consumables={consumables} loadingItems={loadingItems}
+        enemyAnimStates={enemyAnimStates}
+        playerAnimState={playerAnimState}
+        floatingDamages={floatingDamages}
+        combatPhase={combatPhase}
+        onAction={handleAction}
+        onSetTargetIndex={setTargetIndex}
+        onSetShowSkills={setShowSkills}
+        onOpenItems={handleOpenItems}
+        onUseItem={handleUseItem}
+        onExitDungeon={handleExitDungeon}
+        onReturnToHub={handleReturnToHub}
+      />
 
-        {targetEnemy && targetEnemy.alive && (
-          <div className={`rounded-lg p-4 ${isBossRoom ? 'bg-red-950 border border-red-800' : 'bg-gray-800/80'}`}>
-            <div className="flex justify-between mb-1">
-              <span className={`font-bold ${isBossRoom ? 'text-red-300' : 'text-red-400'}`}>
-                🎯 {targetEnemy.enemy.name}
-                {isBossRoom && <span className="ml-2 text-xs bg-red-800 text-red-300 px-2 py-0.5 rounded">BOSS</span>}
-              </span>
-              <span className="text-sm text-gray-400">{targetEnemy.currentHP}/{targetEnemy.maxHP} HP</span>
-            </div>
-            <div className="w-full bg-gray-600 rounded-full h-3">
-              <div className={`h-3 rounded-full transition-all duration-500 ${isBossRoom ? 'bg-red-600' : 'bg-red-500'}`} style={{ width: `${Math.max(0, Math.round((targetEnemy.currentHP / targetEnemy.maxHP) * 100))}%` }} />
-            </div>
-            {aliveEnemies.length > 1 && <p className="text-xs text-gray-500 mt-1">{aliveEnemies.length} enemigos vivos — tocá uno para cambiar objetivo</p>}
-          </div>
-        )}
+      {/* Modal de victoria */}
+      {process.env.NODE_ENV === 'development' && <AiDebugPanel entries={aiDebugAccRef.current} tick={aiDebugTick} />}
 
-        <div ref={logRef} className="bg-gray-800 rounded-lg p-4 h-48 overflow-y-auto flex flex-col gap-1">
-          {log.map((entry: string, i: number) => (
-            <p key={i} className={`text-sm ${entry.includes('CRÍTICO') || entry.includes('OVERCRIT') ? 'text-yellow-400 font-bold' : 'text-gray-300'}`}>{entry}</p>
-          ))}
-          {isProcessing && <p className="text-sm text-yellow-500 animate-pulse">Resolviendo turno...</p>}
-        </div>
-
-        <div className="bg-gray-800 rounded-lg p-4">
-          <div className="flex justify-between mb-2">
-            <span className="font-bold text-green-400">🧙 {player.name}</span>
-            <span className="text-sm text-gray-400">{playerHP}/{derived.max_hp} HP</span>
-          </div>
-          <div className="w-full bg-gray-600 rounded-full h-3 mb-2">
-            <div className="bg-green-500 h-3 rounded-full transition-all duration-500" style={{ width: `${playerHPPct}%` }} />
-          </div>
-          <div className="flex gap-4 text-sm">
-            <span className="text-yellow-400">⚡ {playerStamina}/{derived.max_stamina}</span>
-            <span className="text-blue-400">🔮 {playerMana}/{derived.max_mana}</span>
-            {run.poisonState && run.poisonState.turnsLeft > 0 && (
-              <span className="text-purple-400">☠️ Veneno ({run.poisonState.turnsLeft}t)</span>
-            )}
-          </div>
-        </div>
-
-        {showSkills && status === 'active' && (
-          <div className="bg-gray-800 rounded-lg p-4 flex flex-col gap-2">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="font-bold text-purple-400">✨ Habilidades</h3>
-              <button onClick={() => setShowSkills(false)} className="text-gray-400 hover:text-white text-sm">✕ Cerrar</button>
-            </div>
-            {availableSkills.map((skill) => {
-              const canUse = playerStamina >= skill.stamina_cost && playerMana >= skill.mana_cost
-              return (
-                <button key={skill.id} onClick={() => handleAction('skill', skill)} disabled={!canUse || isProcessing} className="text-left bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg p-3 transition">
-                  <div className="flex justify-between items-start">
-                    <span className="font-bold text-white">{skill.name}</span>
-                    <div className="flex gap-2 text-xs">
-                      {skill.stamina_cost > 0 && <span className="text-yellow-400">⚡{skill.stamina_cost}</span>}
-                      {skill.mana_cost > 0 && <span className="text-blue-400">🔮{skill.mana_cost}</span>}
-                    </div>
-                  </div>
-                  <p className="text-gray-400 text-sm mt-1">{skill.description}</p>
-                  <p className="text-purple-400 text-xs mt-1">Daño: x{skill.damage_multiplier} • {skill.type}</p>
-                </button>
-              )
-            })}
-          </div>
-        )}
-
-        {showItems && status === 'active' && (
-          <div className="bg-gray-800 rounded-lg p-4 flex flex-col gap-2">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="font-bold text-green-400">🎒 Consumibles</h3>
-              <button onClick={() => setShowItems(false)} className="text-gray-400 hover:text-white text-sm">✕ Cerrar</button>
-            </div>
-            {loadingItems && <p className="text-gray-400 text-sm text-center py-2">Cargando...</p>}
-            {!loadingItems && consumables.length === 0 && <p className="text-gray-500 text-sm text-center py-2">No tenés consumibles</p>}
-            {!loadingItems && consumables.map((entry) => (
-              <button key={entry.id} onClick={() => handleUseItem(entry.id)} disabled={isProcessing} className="text-left bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg p-3 transition">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <span className="font-bold text-white">{entry.item.name}</span>
-                    <div className="flex gap-3 text-xs mt-1">
-                      {entry.item.effect?.heal_hp      > 0 && <span className="text-red-400">❤️ +{entry.item.effect.heal_hp} HP</span>}
-                      {entry.item.effect?.heal_stamina > 0 && <span className="text-yellow-400">⚡ +{entry.item.effect.heal_stamina}</span>}
-                      {entry.item.effect?.heal_mana    > 0 && <span className="text-blue-400">🔮 +{entry.item.effect.heal_mana}</span>}
-                    </div>
-                  </div>
-                  <span className="text-gray-400 text-sm">x{entry.quantity}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {isTraining && status === 'active' && (
-          <button onClick={handleExitDungeon} disabled={isSaving} className="w-full bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-300 font-bold py-2 rounded-lg transition text-sm">
-            {isSaving ? 'Saliendo...' : '🚪 Salir del entrenamiento'}
-          </button>
-        )}
-
-        {status === 'active' && !showSkills && !showItems && (
-          <div className="grid grid-cols-2 gap-3">
-            <ActionButton label="⚔️ Atacar"     onClick={() => handleAction('attack')} disabled={isProcessing} color="bg-red-600 hover:bg-red-500" />
-            <ActionButton label="✨ Habilidades" onClick={() => setShowSkills(true)}    disabled={isProcessing} color="bg-purple-600 hover:bg-purple-500" />
-            <ActionButton label={`🛡️ Bloquear (${Math.round(Math.max(10, 95 - consecutiveBlocks * 15))}%)`} onClick={() => handleAction('block')} disabled={isProcessing} color="bg-blue-600 hover:bg-blue-500" />
-            <ActionButton label="🎒 Item"        onClick={handleOpenItems}              disabled={isProcessing} color="bg-green-700 hover:bg-green-600" />
-          </div>
-        )}
-
-        {status === 'victory' && !isBossRoom && (
-          <div className="bg-green-900 rounded-lg p-4 text-center">
-            <p className="text-green-400 font-bold animate-pulse">✅ Sala despejada — avanzando...</p>
-          </div>
-        )}
-
-        {status === 'defeat' && (
-          <div className="bg-red-900 rounded-lg p-6 text-center">
-            <h2 className="text-2xl font-bold mb-2">💀 Derrota</h2>
-            <p className="mb-4 text-gray-400">Perdiste el loot de esta run</p>
-            <button onClick={handleReturnToHub} className="bg-red-500 text-white font-bold px-6 py-2 rounded-lg">Volver al Hub</button>
-          </div>
-        )}
-      </div>
-
-      <div className="flex-1 flex items-center justify-center p-4">
-        <div className="bg-black/40 rounded-xl p-4 flex flex-col items-center gap-2">
-          <img src="/sprites/enemies/SlimeBase_512x512.png" alt={player.name} className="w-32 h-32 object-contain" style={{ imageRendering: 'pixelated' }} />
-          <span className="text-green-400 text-xs font-bold text-center">{player.name}</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ActionButton({ label, onClick, disabled, color, subtitle }: {
-  label: string; onClick: () => void; disabled: boolean; color: string; subtitle?: string
-}) {
-  return (
-    <button onClick={onClick} disabled={disabled} className={`${color} text-white font-bold py-3 px-4 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed flex flex-col items-center`}>
-      <span>{label}</span>
-      {subtitle && <span className="text-xs opacity-70 mt-1">{subtitle}</span>}
-    </button>
+      {victoryModal && (
+        <VictoryModal
+          type={victoryModal.type}
+          exp={victoryModal.exp}
+          gold={victoryModal.gold}
+          items={victoryModal.items}
+          depth={run.depth}
+          isSaving={isSaving}
+          onContinue={victoryModal.type === 'boss' ? handleBossModalContinue : handleRoomModalContinue}
+          onReturnToHub={victoryModal.type === 'boss' ? handleBossModalExit : undefined}
+        />
+      )}
+    </>
   )
 }

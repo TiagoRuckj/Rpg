@@ -433,3 +433,125 @@ export function calcClassBonuses(
   }
   return result
 }
+
+// ─── AI de Enemigos ───────────────────────────────────────────────────────────
+// Agregar al final de src/types/game.ts
+
+export type AiTier = 'dumb' | 'medium' | 'smart' | 'boss'
+
+// Acción que puede ejecutar un enemigo
+// Categorías:
+//   attack      — daño directo (subtype: 'fisica' | 'magica' | 'mixta')
+//   buff        — mejora propia (ataque, defensa, etc.)
+//   debuff      — reduce stats del rival
+//   recuperacion — recuperar HP, stamina u otros recursos
+//   extra       — efectos especiales (stun, veneno, invocar, etc.)
+export type EnemyActionType = 'attack' | 'buff' | 'debuff' | 'recuperacion' | 'extra'
+export type AttackSubtype = 'fisica' | 'magica' | 'mixta'
+
+export interface EnemyAction {
+  id: number
+  name: string
+  label: string
+  type: EnemyActionType
+  subtype?: AttackSubtype       // solo para type === 'attack'
+  base_weight: number
+  energy_cost: number           // energía necesaria para ejecutar esta acción
+  effect: EnemyActionEffect
+}
+
+export interface EnemyActionEffect {
+  damage_multiplier?: number    // multiplicador sobre el ataque base (type: attack)
+  stat_target?: string          // qué stat afecta (type: buff | debuff) ej: 'attack' | 'defense'
+  stat_mult?: number            // multiplicador del stat (0.8 = -20%, 1.2 = +20%)
+  apply_effect?: string         // efecto a aplicar (type: extra) ej: 'poison' | 'stun'
+  heal_pct?: number             // % del max_hp a recuperar (type: recuperacion)
+  heal_stamina_pct?: number     // % del max_stamina a recuperar (type: recuperacion)
+  summon_enemy_id?: number      // ID del enemigo a invocar (type: extra)
+}
+
+// Configuración de IA de un enemigo/boss en DB
+export interface EnemyAiConfig {
+  id: number
+  entity_type: 'enemy' | 'boss'
+  entity_id: number
+  ai_tier: AiTier
+  energy_threshold: number | null  // umbral de disparo para tier 'dumb'
+  energy_per_turn: number          // energía que regenera por turno
+  max_energy: number               // techo máximo acumulable
+  action_ids: number[]
+}
+
+// Fase de un boss
+export interface BossPhase {
+  id: number
+  boss_id: number
+  phase_order: number
+  hp_threshold: number           // 0.0 a 1.0
+  ai_tier: AiTier | null        // null = hereda el del enemy_ai base
+  cap_damage: boolean
+  summon_enemy_ids: number[] | null  // reemplaza summon_enemy_id
+  stat_changes: BossPhaseStatChanges | null
+  action_ids: number[] | null   // null = hereda del enemy_ai base
+}
+
+export interface BossPhaseStatChanges {
+  attack_mult?: number           // multiplicador sobre ataque base
+  defense_add?: number           // suma fija a defensa
+  // extensible para futuras mecánicas
+}
+
+// Estado de IA en runtime — se guarda en EnemyCombatState
+export interface EnemyAiState {
+  tier: AiTier
+  energy: number                 // energía acumulada actual
+  maxEnergy: number              // techo acumulable (viene de enemy_ai.max_energy)
+  activePhaseOrder: number       // última fase activada (0 = ninguna)
+  triggeredPhases: number[]      // phase_order de fases ya disparadas (para no repetir)
+}
+
+// EnemyCombatState extendido — reemplaza la definición actual en game.ts
+// Cambios respecto al original:
+//   + aiState: EnemyAiState | null
+//   + statMults: BossPhaseStatChanges | null  (para enrage activo)
+export interface EnemyCombatState {
+  instanceId: number
+  enemy: Enemy
+  currentHP: number
+  maxHP: number
+  alive: boolean
+  // nuevo
+  aiState: EnemyAiState | null        // null = enemigos sin IA configurada (comportamiento legacy)
+  statMults: BossPhaseStatChanges | null  // modificadores de fase activos
+}
+
+// Resultado de resolveEnemyAction
+export interface EnemyActionResult {
+  action: EnemyAction
+  // Daño efectivo a aplicar al jugador (0 si no es acción de ataque)
+  damageToPlayer: number
+  // HP curado al propio enemigo (0 si no es heal)
+  selfHeal: number
+  // Efectos a aplicar al jugador
+  newPlayerEffects: string[]
+  // Enemigo a invocar (null si no hay summon)
+  summonEnemyId: number | null
+  // Si esta acción dispara cap de daño (solo bosses en transición de fase)
+  capPlayerDamage: boolean
+  // Log legible
+  log: string[]
+}
+
+// ─── Extensión de Boss ────────────────────────────────────────────────────────
+// Agregar a la interface Boss existente en game.ts:
+//
+//   initial_adds?: number[]   // IDs de enemigos que spawnean junto al boss
+//
+// Y en la DB:
+//   ALTER TABLE bosses ADD COLUMN initial_adds INT[] DEFAULT NULL;
+//
+// No se redefine Boss acá para no crear conflicto de tipos.
+// Usarlo como (boss as any).initial_adds hasta que se agregue al tipo oficial.
+export interface BossWithAdds {
+  initial_adds?: number[]
+}

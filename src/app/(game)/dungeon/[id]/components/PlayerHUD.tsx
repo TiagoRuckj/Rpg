@@ -11,23 +11,27 @@ interface PlayerHUDProps {
   maxStamina: number
   maxMana: number
   poisonState?: PlayerPoisonState | null
+  isBeingHit?: boolean
 }
 
 export function PlayerHUD({
   name, playerHP, playerStamina, playerMana,
   maxHP, maxStamina, maxMana, poisonState,
+  isBeingHit = false,
 }: PlayerHUDProps) {
   const hpPct = Math.max(0, Math.round((playerHP / maxHP) * 100))
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4">
+    <div className={`bg-gray-800 rounded-lg p-4 transition-all duration-150 ${isBeingHit ? 'ring-2 ring-red-500 bg-red-950/30' : ''}`}>
       <div className="flex justify-between mb-2">
         <span className="font-bold text-green-400">🧙 {name}</span>
         <span className="text-sm text-gray-400">{playerHP}/{maxHP} HP</span>
       </div>
       <div className="w-full bg-gray-600 rounded-full h-3 mb-2">
         <div
-          className="bg-green-500 h-3 rounded-full transition-all duration-500"
+          className={`h-3 rounded-full transition-all duration-500 ${
+            hpPct > 50 ? 'bg-green-500' : hpPct > 25 ? 'bg-yellow-500' : 'bg-red-500'
+          }`}
           style={{ width: `${hpPct}%` }}
         />
       </div>

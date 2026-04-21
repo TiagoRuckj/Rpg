@@ -6,8 +6,8 @@ interface CombatStore extends CombatState {
   // Run state
   run: RunState
   consecutiveBlocks: number
-  stunnedEnemyIds: number[]   // instanceIds stunneados por martillo este turno
-  burnStates: BurnState[]     // enemigos quemados con turnos restantes
+  stunnedEnemyIds: number[]
+  burnStates: BurnState[]
 
   // Combat actions
   initCombat: (
@@ -35,6 +35,18 @@ interface CombatStore extends CombatState {
   setStatusEffects: (effects: StatusEffect[]) => void
   applyBurnEffect: (instanceId: number) => void
   applyPoisonEffect: (damagePerTurn?: number, turnsLeft?: number) => void
+  // ── nuevo: reemplaza el array completo de enemigos en combate ─────────────
+  // Acepta array directo o función updater (similar a useState)
+  setCurrentEnemies: (enemies: EnemyCombatState[] | ((prev: EnemyCombatState[]) => EnemyCombatState[])) => void
+
+  // ── sistema de turnos separados ───────────────────────────────────────────
+  combatPhase: 'idle' | 'player_acting' | 'enemy_acting' | 'phase_transition'
+  lastPlayerDamage: number
+  lastEnemyDamages: Record<number, number>   // instanceId → daño recibido por el jugador
+  setCombatPhase: (phase: CombatStore['combatPhase']) => void
+  setLastPlayerDamage: (dmg: number) => void
+  setLastEnemyDamages: (dmgs: Record<number, number>) => void
+  clearCombatAnimations: () => void
 
   // Run actions
   initRun: (totalRooms: number) => void
@@ -78,6 +90,9 @@ export const useCombatStore = create<CombatStore>((set) => ({
   consecutiveBlocks: 0,
   stunnedEnemyIds: [],
   burnStates: [],
+  combatPhase: 'idle' as const,
+  lastPlayerDamage: 0,
+  lastEnemyDamages: {},
 
   // --- Combat ---
   initCombat: (playerHP, playerStamina, playerMana, enemies) => set((state) => ({
@@ -122,15 +137,14 @@ export const useCombatStore = create<CombatStore>((set) => ({
   setCurrentEvent: (event) => set((state) => ({ run: { ...state.run, currentEvent: event } })),
   setPoisonState: (poisonState) => set((state) => ({ run: { ...state.run, poisonState } })),
 
-  // Nuevo sistema unificado de status effects
   setStatusEffects: (effects) => set((state) => ({
     run: {
       ...state.run,
       statusEffects: effects,
-      // Mantener campos legacy sincronizados durante la migración
       poisonState: toPlayerPoisonState(effects),
     },
   })),
+
   applyBurnEffect: (instanceId) => set((state) => {
     const updated = applyBurn(instanceId, state.run.statusEffects)
     return {
@@ -141,6 +155,7 @@ export const useCombatStore = create<CombatStore>((set) => ({
       },
     }
   }),
+
   applyPoisonEffect: (damagePerTurn = 10, turnsLeft = 5) => set((state) => {
     const updated = applyPoison(state.run.statusEffects, damagePerTurn, turnsLeft)
     return {
@@ -151,7 +166,32 @@ export const useCombatStore = create<CombatStore>((set) => ({
       },
     }
   }),
-  reset: () => set({ ...initialCombatState, run: initialRunState, consecutiveBlocks: 0, stunnedEnemyIds: [], burnStates: [] }),
+
+  // Reemplaza el array completo — usado para adds invocados y aiState updates
+  setCurrentEnemies: (enemies) => set((state) => ({
+    run: {
+      ...state.run,
+      currentEnemies: typeof enemies === 'function'
+        ? enemies(state.run.currentEnemies)
+        : enemies,
+    },
+  })),
+
+  setCombatPhase: (phase) => set({ combatPhase: phase }),
+  setLastPlayerDamage: (dmg) => set({ lastPlayerDamage: dmg }),
+  setLastEnemyDamages: (dmgs) => set({ lastEnemyDamages: dmgs }),
+  clearCombatAnimations: () => set({ lastPlayerDamage: 0, lastEnemyDamages: {} }),
+
+  reset: () => set({
+    ...initialCombatState,
+    run: initialRunState,
+    consecutiveBlocks: 0,
+    stunnedEnemyIds: [],
+    burnStates: [],
+    combatPhase: 'idle',
+    lastPlayerDamage: 0,
+    lastEnemyDamages: {},
+  }),
 
   setTargetIndex: (index) => set((state) => ({
     run: { ...state.run, targetIndex: index },
@@ -188,7 +228,6 @@ export const useCombatStore = create<CombatStore>((set) => ({
 
   advanceRoom: () => set((state) => {
     const nextRoom = state.run.currentRoom + 1
-    // Post-boss: cada sala completada sube la profundidad
     const newDepth = state.run.bossDefeated ? state.run.depth + 1 : state.run.depth
     return {
       run: {

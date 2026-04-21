@@ -8,6 +8,7 @@ import {
 } from '@/types/game'
 import { EventPanel, EventSheet, EventEffect } from './EventPanel'
 import { PlayerHUD } from './PlayerHUD'
+import { buyMerchantItemAction } from '@/actions/merchantActions'
 
 interface BetweenRoomsScreenProps {
   player: Player
@@ -37,6 +38,7 @@ interface BetweenRoomsScreenProps {
   setCurrentEvent: (event: any) => void
   setPoisonState: (state: any) => void
   setFightingEvent: (v: boolean) => void
+  setMimicPendingGold: (gold: number) => void
   granGoblinBoss: Boss | null
   setGranGoblinBoss: (boss: Boss | null) => void
   nextInstanceId: () => number
@@ -60,7 +62,7 @@ export function BetweenRoomsScreen({
   setPlayerHP, setPhase, setCurrentEnemy,
   initCombat, setStunnedEnemyIds, setBurnStates,
   addLoot, advanceRoom, setCurrentEvent, setPoisonState,
-  setFightingEvent, granGoblinBoss, setGranGoblinBoss,
+  setFightingEvent, setMimicPendingGold, granGoblinBoss, setGranGoblinBoss,
   nextInstanceId, buildEnemyCombatStates,
   onOpenRestConsumables, onUseRestItem, onExitDungeon,
   showRestConsumables, setShowRestConsumables,
@@ -87,6 +89,8 @@ export function BetweenRoomsScreen({
         currentHP: scaledMaxHP,
         maxHP: scaledMaxHP,
         alive: true,
+        aiState: { tier: 'boss', energy: 0, maxEnergy: 8, activePhaseOrder: 0, triggeredPhases: [] },
+        statMults: null,
       }
       setStunnedEnemyIds([])
       setBurnStates([])
@@ -103,11 +107,36 @@ export function BetweenRoomsScreen({
     }
   }
 
-  function handleEventResolve(effect: EventEffect) {
-    setCurrentEvent({ ...run.currentEvent!, resolved: true })
-    if (effect.healHP) setPlayerHP(Math.min(playerHP + effect.healHP, derived.max_hp))
-    if (effect.gold)   addLoot({ gold: effect.gold })
+  const [lastEventMsg, setLastEventMsg] = useState<string | null>(null)
+
+  async function handleEventResolve(effect: EventEffect) {
+    // Solo marcar como resuelto si no es una compra al mercader (el mercader se puede usar varias veces)
+    const isMerchantPurchase = effect.goldCost !== undefined && !effect.startCombat
+    if (!isMerchantPurchase) {
+      setCurrentEvent({ ...run.currentEvent!, resolved: true })
+    }
+
+    if (effect.healHP) {
+      const actual = Math.min(effect.healHP, derived.max_hp - playerHP)
+      setPlayerHP(Math.min(playerHP + effect.healHP, derived.max_hp))
+      if (actual > 0) setLastEventMsg(`✨ Absorbiste la energía del altar. +${actual} HP recuperado.`)
+    }
+    if (effect.gold) {
+      addLoot({ gold: effect.gold })
+      setLastEventMsg(`💰 Encontraste ${effect.gold} gold en el cofre!`)
+    }
+    if (effect.goldCost && effect.itemBought) {
+      buyMerchantItemAction(effect.itemBought, effect.goldCost).then(result => {
+        if (result.success) {
+          setLastEventMsg(`🛒 Compraste un item por ${effect.goldCost} gold`)
+        }
+      })
+    }
     if (effect.poison) setPoisonState(effect.poison)
+    if (effect.mimicGold) {
+      // Guardar el gold para agregarlo cuando el mimico muera
+      setMimicPendingGold(effect.mimicGold)
+    }
     if (effect.startCombat && effect.combatEnemies) {
       setFightingEvent(true)
       setCurrentEvent({ ...run.currentEvent!, resolved: true })
@@ -206,6 +235,13 @@ export function BetweenRoomsScreen({
           </div>
         )}
 
+        {/* Resultado del último evento */}
+        {lastEventMsg && (
+          <div className="bg-yellow-950 border border-yellow-700 rounded-lg p-4">
+            <p className="text-yellow-300 font-bold text-sm">{lastEventMsg}</p>
+          </div>
+        )}
+
         {/* Evento aleatorio — sheet desde abajo */}
         {run.currentEvent && (
           <EventSheet
@@ -213,7 +249,7 @@ export function BetweenRoomsScreen({
             event={run.currentEvent}
             playerHP={playerHP}
             maxHP={derived.max_hp}
-            playerGold={0}
+            playerGold={run.accumulatedLoot.gold}
             enemies={enemies}
             dungeon={dungeon}
             depthMult={depthMult}
