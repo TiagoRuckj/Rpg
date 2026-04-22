@@ -1,5 +1,5 @@
 import { Enemy, EnemyCombatState } from '@/types/game'
-import { EnemyAiConfig, EnemyAiState } from '@/types/game'
+import { EnemyAiConfig } from '@/types/game'
 import { initAiState } from '@/lib/game/enemyAi'
 
 // ─── Contador de instancias ───────────────────────────────────────────────────
@@ -49,15 +49,14 @@ export function buildEnemyCombatStates(
   aiConfigs?: EnemyAiConfig[],
 ): EnemyCombatState[] {
   const weights = spawnTable && room ? getSpawnWeights(spawnTable, room) : undefined
+
   return Array.from({ length: count }, () => {
     const enemy = pickWeightedEnemy(pool, weights)
     const maxHP = Math.round(enemy.stats.hp * depthMult)
 
-    // Buscar config de IA para este enemigo (opcional)
+    // Buscar config de IA para este enemigo — si no hay, usar dumb por defecto
     const aiConfig = aiConfigs?.find(c => c.entity_type === 'enemy' && c.entity_id === enemy.id)
-    const aiState: EnemyAiState | null = aiConfig
-      ? initAiState(aiConfig.ai_tier, aiConfig.max_energy ?? 5)
-      : null
+    const aiState = initAiState(aiConfig?.ai_tier ?? 'dumb', enemy.max_energy)
 
     return {
       instanceId: nextInstanceId(),
@@ -79,9 +78,8 @@ export function buildSummonedEnemy(
   aiConfig?: EnemyAiConfig,
 ): EnemyCombatState {
   const maxHP = Math.round(enemy.stats.hp * depthMult)
-  const aiState: EnemyAiState | null = aiConfig
-    ? initAiState(aiConfig.ai_tier, aiConfig.max_energy ?? 5)
-    : null
+  // Si no hay config, usar dumb por defecto
+  const aiState = initAiState(aiConfig?.ai_tier ?? 'dumb', enemy.max_energy)
 
   return {
     instanceId: nextInstanceId(),

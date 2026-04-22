@@ -5,7 +5,34 @@ import { createClient } from '@/lib/supabase/server'
 const NON_STACKABLE_TYPES = new Set(['weapon', 'armor', 'ring', 'necklace'])
 
 /**
- * Compra un item al mercader con precio personalizado (puede diferir del value en DB).
+ * Persiste el gold acumulado en el run al jugador antes de procesar una compra.
+ * Evita que el mercader rechace compras por gold que el jugador ganó en el run
+ * pero aún no está en la DB.
+ */
+export async function flushRunGoldAction(
+  runGold: number,
+): Promise<{ success: boolean; error?: string }> {
+  if (runGold <= 0) return { success: true }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'No autorizado' }
+
+  const { data: player } = await supabase
+    .from('players').select('gold').eq('id', user.id).single()
+  if (!player) return { success: false, error: 'Jugador no encontrado' }
+
+  const { error } = await supabase
+    .from('players')
+    .update({ gold: player.gold + runGold })
+    .eq('id', user.id)
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+/**
+ * Compra un item al mercader con precio personalizado.
  * Valida que el jugador tenga suficiente gold, descuenta y agrega al inventario.
  */
 export async function buyMerchantItemAction(
@@ -25,14 +52,12 @@ export async function buyMerchantItemAction(
   if (!player) return { success: false, error: 'Jugador no encontrado' }
   if (player.gold < price) return { success: false, error: 'Gold insuficiente' }
 
-  // Descontar gold
   const { error: goldError } = await supabase
     .from('players')
     .update({ gold: player.gold - price })
     .eq('id', user.id)
   if (goldError) return { success: false, error: goldError.message }
 
-  // Agregar al inventario
   const isStackable = !NON_STACKABLE_TYPES.has(item.type)
   if (isStackable) {
     const { data: existing } = await supabase

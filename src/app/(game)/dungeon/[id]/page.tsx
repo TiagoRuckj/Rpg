@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import { Player, Dungeon, Boss, Enemy } from '@/types/game'
+import { Player, Dungeon, Boss, Enemy, EnemyAiConfig } from '@/types/game'
 import CombatClient from './CombatClient'
 
 export default async function DungeonRunPage({ params }: { params: Promise<{ id: string }> }) {
@@ -43,6 +43,18 @@ const { data: boss } = await supabase
     .from('enemies')
     .select('*')
     .eq('dungeon_id', id)
+
+  // Cargar configs de IA de los enemigos del dungeon
+  const { data: enemyAiConfigs } = await supabase
+    .from('enemy_ai')
+    .select('*')
+    .eq('entity_type', 'enemy')
+
+  const aiConfigs: EnemyAiConfig[] = (enemyAiConfigs ?? []) as EnemyAiConfig[]
+  console.log('[PAGE] aiConfigs cargados desde DB', {
+    total: aiConfigs.length,
+    detalle: aiConfigs.map(c => ({ id: c.id, entity_type: c.entity_type, entity_id: c.entity_id, tier: c.ai_tier })),
+  })
 
   const enemyPool: Enemy[] = (enemies && enemies.length > 0)
     ? enemies as Enemy[]
@@ -92,6 +104,7 @@ const { data: boss } = await supabase
       dungeon={dungeon as Dungeon}
       boss={boss as Boss}
       enemies={enemyPool}
+      aiConfigs={aiConfigs}
     />
   )
 }

@@ -6,16 +6,18 @@ import { useRouter } from 'next/navigation'
 import {
   Player, Dungeon, Boss, Enemy, CombatAction, PlayerSkill,
   EnemyType, EnemyCombatState, deriveStats, depthMultiplier, rollEnemyCount,
-  rollRoomEvent, EnemyAiState,
+  rollRoomEvent, EnemyAiState, EnemyAiConfig,
 } from '@/types/game'
 import { useCombatStore } from '@/stores/combatStore'
-import { takeTurnAction, playerTurnAction, enemyTurnAction, EnemyTurnState, ItemUsed } from '@/actions/combatActions'
+import { playerTurnAction, enemyTurnAction, endTurnAction, EnemyTurnState, ItemUsed } from '@/actions/combatActions'
 import { registerKillAction } from '@/actions/classActions'
 import { saveRunAction } from '@/actions/saveRunAction'
 import { clearRunAction } from '@/actions/activeRunAction'
 import { BASE_SKILLS, LOCKED_SKILLS } from '@/lib/game/skills'
 import { resolveEnemyLoot, resolveBossLoot } from '@/lib/game/loot'
 import { nextInstanceId, buildEnemyCombatStates, buildSummonedEnemy } from '@/lib/game/spawn'
+import { initAiState } from '@/lib/game/enemyAi'
+import { StatusEffect } from '@/lib/game/statusEffects'
 import { useItemHandlers } from './hooks/useItemHandlers'
 import { BetweenRoomsScreen } from './components/BetweenRoomsScreen'
 import { ResultsScreen } from './components/ResultsScreen'
@@ -31,11 +33,12 @@ interface Props {
   dungeon: Dungeon
   boss: Boss
   enemies: Enemy[]
+  aiConfigs: EnemyAiConfig[]
 }
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 
-export default function CombatClient({ player, dungeon, boss, enemies }: Props) {
+export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs }: Props) {
   const router = useRouter()
   const logRef = useRef<HTMLDivElement>(null)
 
@@ -100,10 +103,9 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     setCurrentEvent,
     consecutiveBlocks, setConsecutiveBlocks,
     stunnedEnemyIds, setStunnedEnemyIds,
-    burnStates, setBurnStates,
     setTargetIndex,
-    setPoisonState,
     setCurrentEnemies,
+    setStatusEffects, applyPoisonEffect,
     combatPhase, setCombatPhase,
     setLastPlayerDamage, setLastEnemyDamages,
   } = useCombatStore()
@@ -153,23 +155,24 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     const scaledMaxHP = Math.round(boss.stats.hp * (run.depth > 0 ? depthMult : 1))
     const bossState: EnemyCombatState = {
       instanceId: nextInstanceId(),
-      enemy: { id: boss.id, dungeon_id: boss.dungeon_id, name: boss.name, stats: { ...boss.stats, hp: scaledMaxHP }, loot_table: [], enemy_type: boss.enemy_type },
+      enemy: { id: boss.id, dungeon_id: boss.dungeon_id, name: boss.name, stats: { ...boss.stats, hp: scaledMaxHP }, loot_table: [], enemy_type: boss.enemy_type, max_energy: boss.max_energy },
       currentHP: scaledMaxHP, maxHP: scaledMaxHP, alive: true,
-      // aiState inicial: el servidor lo actualiza con updatedAiStates cada turno.
-      // Arranca con tier 'boss' y triggeredPhases vacío para que evaluateBossPhase
-      // pueda detectar el cruce de fases desde el primer turno.
-      aiState: { tier: 'boss', energy: 0, maxEnergy: 8, activePhaseOrder: 0, triggeredPhases: [] },
+      // aiState inicial: tier viene de la aiConfig, max_energy del boss directamente.
+      // El servidor lo actualiza con updatedAiStates cada turno.
+      aiState: (() => {
+        const bossAiConfig = aiConfigs.find(c => c.entity_type === 'boss' && c.entity_id === boss.id)
+        return { tier: bossAiConfig?.ai_tier ?? 'smart', energy: 0, maxEnergy: boss.max_energy, activePhaseOrder: 0, triggeredPhases: [], nextActionId: null }
+      })(),
       statMults: null,
     }
     setStunnedEnemyIds([])
-    setBurnStates([])
 
     // Spawnear adds iniciales si el boss los tiene configurados
     const combatEnemies: EnemyCombatState[] = [bossState]
     if ((boss as any).initial_adds?.length) {
       for (const enemyId of (boss as any).initial_adds as number[]) {
         const template = enemies.find(e => e.id === enemyId)
-        if (template) combatEnemies.push(buildSummonedEnemy(template, depthMult))
+        if (template) combatEnemies.push(buildSummonedEnemy(template, depthMult, aiConfigs.find(c => c.entity_id === template.id && c.entity_type === 'enemy')))
       }
     }
 
@@ -216,11 +219,11 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
 
   async function handleRoomAction(action: CombatAction, skill?: PlayerSkill, itemUsed?: ItemUsed) {
     const enemyTurnStates: EnemyTurnState[] = run.currentEnemies.map(e => ({
-      instanceId: e.instanceId, currentHP: e.currentHP, maxHP: e.maxHP, alive: e.alive,
+      instanceId: e.instanceId, enemyId: e.enemy.id, currentHP: e.currentHP, maxHP: e.maxHP, alive: e.alive,
       attack: Math.round(e.enemy.stats.attack * depthMult),
       defense: Math.round(e.enemy.stats.defense * depthMult),
       name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
-      aiState: e.aiState ?? null,
+      aiState: e.aiState,
     }))
 
     // ── FASE 1: turno del jugador ──────────────────────────────────────────
@@ -231,7 +234,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       currentPlayerHP: playerHP, currentPlayerStamina: playerStamina, currentPlayerMana: playerMana,
       enemies: enemyTurnStates, targetIndex: safeTargetIndex,
       isBlocking: action === 'block',
-      burnStates, poisonState: run.poisonState, statusEffects: run.statusEffects,
+      statusEffects: run.statusEffects,
       turn,
     })
 
@@ -244,6 +247,8 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       setPlayerMana(ptResult.newPlayerMana)
       // Actualizar maxHP real (con gear) desde el server
       if (ptResult.playerMaxHP > 0) setRealMaxHP(ptResult.playerMaxHP)
+      // Aplicar curación de item inmediatamente
+      if (action === 'item') setPlayerHP(ptResult.newPlayerHP)
     })
 
     // ── Fix: animación ANTES de marcar alive:false ───────────────────────────
@@ -336,13 +341,13 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     const enemyStatesAfter = updatedEnemies
       .filter(e => e.alive && !alreadyDefeated.has(e.instanceId))
       .map(e => ({
-        instanceId: e.instanceId,
+        instanceId: e.instanceId, enemyId: e.enemy.id,
         currentHP: ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP,
         maxHP: e.maxHP, alive: e.alive,
         attack: Math.round(e.enemy.stats.attack * depthMult),
         defense: Math.round(e.enemy.stats.defense * depthMult),
         name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
-        aiState: ptResult.updatedAiStates[e.instanceId] ?? e.aiState ?? null,
+        aiState: ptResult.updatedAiStates[e.instanceId] ?? e.aiState,
       }))
 
     const etResult = await enemyTurnAction({
@@ -352,8 +357,8 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       enemies: enemyStatesAfter,
       isBlocking: action === 'block',
       consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
-      stunnedEnemyIds, burnStates, poisonState: run.poisonState,
-      statusEffects: run.statusEffects,
+      stunnedEnemyIds: [...stunnedEnemyIds, ...(ptResult.newStunnedEnemyIds ?? [])],
+      statusEffects: ptResult.newStatusEffects,
       turn,
       phaseTriggeredThisTurn: false,
     })
@@ -378,12 +383,61 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     setPlayerHP(etResult.newPlayerHP)
     setConsecutiveBlocks(etResult.newConsecutiveBlocks)
     setStunnedEnemyIds(etResult.newStunnedEnemyIds)
-    setBurnStates(etResult.newBurnStates)
-    setPoisonState(etResult.newPoisonState)
+
+    // Aplicar aiStates
+    if (Object.keys(etResult.updatedAiStates).length > 0 || Object.keys(etResult.updatedEnemyHPs).length > 0) {
+      applyEnemyUpdates(etResult.updatedEnemyHPs, etResult.updatedAiStates, [], run.currentEnemies, [])
+    }
+
+    // ── FASE 3: fin de turno — efectos de estado ──────────────────────────
+    await new Promise(r => setTimeout(r, 300))
+    setCombatPhase('effects')
+
+    // Construir estados actuales para endTurnAction
+    const enemiesForEffects = run.currentEnemies
+      .filter(e => e.alive)
+      .map(e => ({
+        instanceId: e.instanceId, enemyId: e.enemy.id,
+        currentHP: etResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP,
+        maxHP: e.maxHP, alive: e.alive,
+        attack: Math.round(e.enemy.stats.attack * depthMult),
+        defense: Math.round(e.enemy.stats.defense * depthMult),
+        name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
+        aiState: e.aiState,
+      }))
+
+    const efResult = await endTurnAction({
+      statusEffects: etResult.newStatusEffects,
+      enemies: enemiesForEffects,
+      currentPlayerHP: etResult.newPlayerHP,
+      bossId: boss.id,
+      bossEnemyInstanceId: bossEnemyState?.instanceId,
+    })
+
+    if (efResult.log.length > 0) {
+      flushSync(() => {
+        addLog('─────────────────')
+        efResult.log.forEach(m => addLog(m))
+      })
+    }
+
+    // Shake por daño de efectos
+    for (const e of enemiesForEffects) {
+      const prevHP = e.currentHP
+      const newHP  = efResult.updatedEnemyHPs[e.instanceId] ?? prevHP
+      if (newHP < prevHP && !efResult.defeatedByEffects.includes(e.instanceId)) {
+        triggerEnemyAnim(e.instanceId, 'hit', 300)
+      }
+    }
+
+    setPlayerHP(efResult.newPlayerHP)
+    setStatusEffects(efResult.newStatusEffects)
+    applyEnemyUpdates(efResult.updatedEnemyHPs, {}, [], run.currentEnemies, efResult.defeatedByEffects)
+
     nextTurn()
     setCombatPhase('idle')
 
-    if (etResult.playerDefeated) {
+    if (etResult.playerDefeated || efResult.playerDefeated) {
       setStatus('defeat')
       saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1 })
     }
@@ -397,11 +451,11 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     return run.currentEnemies.map(e => {
       const isBossEntity = e.instanceId === bossEnemyState.instanceId
       return {
-        instanceId: e.instanceId, currentHP: e.currentHP, maxHP: e.maxHP, alive: e.alive,
+        instanceId: e.instanceId, enemyId: e.enemy.id, currentHP: e.currentHP, maxHP: e.maxHP, alive: e.alive,
         attack: isBossEntity ? scaledAtk : Math.round(e.enemy.stats.attack * depthMult),
         defense: isBossEntity ? scaledDef : Math.round(e.enemy.stats.defense * depthMult),
         name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
-        aiState: e.aiState ?? null,
+        aiState: e.aiState,
       }
     })
   }
@@ -437,7 +491,8 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       for (const enemyId of summonIds) {
         const template = enemies.find(e => e.id === enemyId)
         if (!template) continue
-        const summoned = buildSummonedEnemy(template, depthMult)
+        const summonAiConfig = aiConfigs.find(c => c.entity_id === template.id && c.entity_type === 'enemy')
+        const summoned = buildSummonedEnemy(template, depthMult, summonAiConfig)
         updated = [...updated, summoned]
         addLog(`👹 ¡${summoned.enemy.name} entra al combate!`)
       }
@@ -493,10 +548,12 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
           const scaledMaxHP = Math.round(boss.stats.hp * (run.depth > 0 ? depthMult : 1))
           const newDummy: EnemyCombatState = {
             instanceId: nextInstanceId(),
-            enemy: { id: boss.id, dungeon_id: boss.dungeon_id, name: boss.name, stats: { ...boss.stats, hp: scaledMaxHP }, loot_table: [], enemy_type: boss.enemy_type },
-            currentHP: scaledMaxHP, maxHP: scaledMaxHP, alive: true, aiState: null, statMults: null,
+            enemy: { id: boss.id, dungeon_id: boss.dungeon_id, name: boss.name, stats: { ...boss.stats, hp: scaledMaxHP }, loot_table: [], enemy_type: boss.enemy_type, max_energy: boss.max_energy },
+            currentHP: scaledMaxHP, maxHP: scaledMaxHP, alive: true, aiState: initAiState('dumb', 3), statMults: null,
           }
-          setConsecutiveBlocks(0); setStunnedEnemyIds([]); setBurnStates([])
+          setConsecutiveBlocks(0); setStunnedEnemyIds([])
+          // Limpiar efectos de enemigos (burn, stun) — el nuevo dummy tiene otro instanceId
+          setStatusEffects(run.statusEffects.filter((e: StatusEffect) => e.target === 'player'))
           initCombat(playerHP, playerStamina, playerMana, [newDummy])
         }, 1000)
         return true
@@ -569,13 +626,17 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     // ── FASE 1: turno del jugador ──────────────────────────────────────────
     setCombatPhase('player_acting')
     const enemyStates = buildBossEnemyStates()
+    if (process.env.NODE_ENV === 'development') {
+      const bossState = enemyStates.find(e => e.instanceId === bossEnemyState?.instanceId)
+      console.log('[DEBUG boss aiState al inicio del turno]', bossState?.aiState)
+    }
 
     const ptResult = await playerTurnAction({
       action, skillUsed: skill, itemUsed,
       currentPlayerHP: playerHP, currentPlayerStamina: playerStamina, currentPlayerMana: playerMana,
       enemies: enemyStates, targetIndex: safeTargetIndex,
       isBlocking: action === 'block',
-      burnStates, poisonState: run.poisonState, statusEffects: run.statusEffects,
+      statusEffects: run.statusEffects,
       bossId: boss.id, turn,
     })
 
@@ -587,6 +648,8 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       setPlayerStamina(ptResult.newPlayerStamina)
       setPlayerMana(ptResult.newPlayerMana)
       if (ptResult.playerMaxHP > 0) setRealMaxHP(ptResult.playerMaxHP)
+      // Aplicar curación de item inmediatamente
+      if (action === 'item') setPlayerHP(ptResult.newPlayerHP)
     })
 
     // ── Animación hit/crit ANTES de marcar alive:false ──────────────────────
@@ -615,7 +678,8 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       for (const enemyId of ptResult.summonEnemyIds) {
         const template = enemies.find(e => e.id === enemyId)
         if (!template) continue
-        const summoned = buildSummonedEnemy(template, depthMult)
+        const summonAiConfig = aiConfigs.find(c => c.entity_id === template.id && c.entity_type === 'enemy')
+        const summoned = buildSummonedEnemy(template, depthMult, summonAiConfig)
         enemiesAfterPlayer = [...enemiesAfterPlayer, summoned]
         addLog(`👹 ¡${summoned.enemy.name} entra al combate!`)
       }
@@ -693,13 +757,13 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
         const scaledAtk = Math.round(boss.stats.attack  * (run.depth > 0 ? depthMult : 1))
         const scaledDef = Math.round(boss.stats.defense * (run.depth > 0 ? depthMult : 1))
         return {
-          instanceId: e.instanceId,
+          instanceId: e.instanceId, enemyId: e.enemy.id,
           currentHP: ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP,
           maxHP: e.maxHP, alive: e.alive,
           attack: isBossEntity ? scaledAtk : Math.round(e.enemy.stats.attack * depthMult),
           defense: isBossEntity ? scaledDef : Math.round(e.enemy.stats.defense * depthMult),
           name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
-          aiState: ptResult.updatedAiStates[e.instanceId] ?? e.aiState ?? null,
+          aiState: ptResult.updatedAiStates[e.instanceId] ?? e.aiState,
         }
       })
 
@@ -710,10 +774,10 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       enemies: enemyStatesAfter,
       isBlocking: action === 'block',
       consecutiveBlocks: action === 'block' ? consecutiveBlocks : 0,
-      stunnedEnemyIds: [], burnStates, poisonState: run.poisonState,
-      statusEffects: run.statusEffects,
-      bossId: boss.id, turn,
-      phaseTriggeredThisTurn: ptResult.phaseTriggered,
+      stunnedEnemyIds: ptResult.newStunnedEnemyIds ?? [],
+      statusEffects: ptResult.newStatusEffects,
+      bossId: boss.id, bossEnemyInstanceId: bossEnemyState?.instanceId, turn,
+      phaseTriggeredThisTurn: false,
     })
 
     if (!etResult.success) { addLog(etResult.error ?? 'Error'); setCombatPhase('idle'); setIsProcessing(false); return }
@@ -736,19 +800,70 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
     })
     setPlayerHP(etResult.newPlayerHP)
     setConsecutiveBlocks(etResult.newConsecutiveBlocks)
-    setBurnStates(etResult.newBurnStates)
-    setPoisonState(etResult.newPoisonState)
+    setStunnedEnemyIds(etResult.newStunnedEnemyIds)
     if (isTraining) { setPlayerStamina(derived.max_stamina); setPlayerMana(derived.max_mana) }
-    nextTurn()
 
-    // Actualizar HPs enemigos por efectos (burn, etc.) y marcar muertos
-    const allDeadIds = [...clientDefeatedIds, ...etResult.defeatedByEffects]
-    if (Object.keys(etResult.updatedEnemyHPs).length > 0 || Object.keys(etResult.updatedAiStates).length > 0 || allDeadIds.length > 0) {
-      applyEnemyUpdates(etResult.updatedEnemyHPs, etResult.updatedAiStates, [], enemiesAfterPlayer, allDeadIds)
+    // Aplicar HPs y aiStates del turno enemigo
+    applyEnemyUpdates(etResult.updatedEnemyHPs, etResult.updatedAiStates, [], enemiesAfterPlayer, [])
+
+    // ── FASE 3: fin de turno — efectos de estado ──────────────────────────
+    await new Promise(r => setTimeout(r, 300))
+    setCombatPhase('effects')
+
+    const isBossEff = (e: EnemyCombatState) => e.instanceId === bossEnemyState?.instanceId
+    const scaledAtkEff = Math.round(boss.stats.attack  * (run.depth > 0 ? depthMult : 1))
+    const scaledDefEff = Math.round(boss.stats.defense * (run.depth > 0 ? depthMult : 1))
+    const enemiesForEffects: EnemyTurnState[] = enemiesAfterPlayer
+      .filter(e => e.alive && (etResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) > 0)
+      .map(e => ({
+        instanceId: e.instanceId,
+        enemyId: e.enemy.id,
+        currentHP: etResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP,
+        maxHP: e.maxHP,
+        alive: e.alive,
+        attack:  isBossEff(e) ? scaledAtkEff : Math.round(e.enemy.stats.attack  * depthMult),
+        defense: isBossEff(e) ? scaledDefEff : Math.round(e.enemy.stats.defense * depthMult),
+        name: e.enemy.name,
+        enemyTypes: e.enemy.enemy_type as EnemyType[],
+        aiState: e.aiState,
+      }))
+
+    const efResult = await endTurnAction({
+      statusEffects: etResult.newStatusEffects,
+      enemies: enemiesForEffects,
+      currentPlayerHP: etResult.newPlayerHP,
+      bossId: boss.id,
+      bossEnemyInstanceId: bossEnemyState?.instanceId,
+    })
+
+    if (efResult.log.length > 0) {
+      flushSync(() => {
+        addLog('─────────────────')
+        efResult.log.forEach(m => addLog(m))
+      })
     }
 
-    // Animar dead para enemigos que murieron por efectos del turno enemigo
-    for (const id of etResult.defeatedByEffects) {
+    // Shake por daño de efectos
+    for (const e of enemiesForEffects) {
+      const prevHP = e.currentHP
+      const newHP  = efResult.updatedEnemyHPs[e.instanceId] ?? prevHP
+      if (newHP < prevHP && !efResult.defeatedByEffects.includes(e.instanceId)) {
+        triggerEnemyAnim(e.instanceId, 'hit', 300)
+      }
+    }
+
+    setPlayerHP(efResult.newPlayerHP)
+    setStatusEffects(efResult.newStatusEffects)
+
+    // Aplicar fase si se activó durante fin de turno
+    const efAiStates: Record<number, EnemyAiState> = {}
+    if (efResult.phaseResult.phaseTriggered && efResult.phaseResult.updatedAiState && bossEnemyState) {
+      efAiStates[bossEnemyState.instanceId] = efResult.phaseResult.updatedAiState
+    }
+
+    applyEnemyUpdates(efResult.updatedEnemyHPs, efAiStates, efResult.phaseResult.summonEnemyIds, enemiesAfterPlayer, efResult.defeatedByEffects)
+
+    for (const id of efResult.defeatedByEffects) {
       const idToKill = id
       triggerEnemyAnim(idToKill, 'dead')
       setTimeout(() => {
@@ -758,12 +873,13 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
       }, 750)
     }
 
+    nextTurn()
     setCombatPhase('idle')
 
     const allDefeated = enemiesAfterPlayer.every(e =>
-      (etResult.updatedEnemyHPs[e.instanceId] ?? ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) <= 0
+      (efResult.updatedEnemyHPs[e.instanceId] ?? etResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) <= 0
     )
-    resolveOutcome(allDefeated, etResult.playerDefeated, etResult.newPlayerHP)
+    resolveOutcome(allDefeated, etResult.playerDefeated || efResult.playerDefeated, efResult.newPlayerHP)
   }
 
   // ─── Items — ver hooks/useItemHandlers.ts ─────────────────────────────────
@@ -799,11 +915,12 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
         lastLoot={lastLoot} isSaving={isSaving}
         setPlayerHP={setPlayerHP} setPlayerStamina={setPlayerStamina} setPlayerMana={setPlayerMana}
         setPhase={setPhase} setCurrentEnemy={setCurrentEnemy}
-        initCombat={initCombat} setStunnedEnemyIds={setStunnedEnemyIds} setBurnStates={setBurnStates}
-        addLoot={addLoot} advanceRoom={advanceRoom} setCurrentEvent={setCurrentEvent} setPoisonState={setPoisonState}
+        initCombat={initCombat} setStunnedEnemyIds={setStunnedEnemyIds}
+        addLoot={addLoot} advanceRoom={advanceRoom} setCurrentEvent={setCurrentEvent}
+        applyPoisonEffect={applyPoisonEffect}
         setFightingEvent={setFightingEvent} setMimicPendingGold={setMimicPendingGold}
         granGoblinBoss={granGoblinBoss} setGranGoblinBoss={setGranGoblinBoss}
-        nextInstanceId={nextInstanceId} buildEnemyCombatStates={buildEnemyCombatStates}
+        nextInstanceId={nextInstanceId} buildEnemyCombatStates={buildEnemyCombatStates} aiConfigs={aiConfigs}
         onOpenRestConsumables={handleOpenRestConsumables}
         onUseRestItem={handleUseRestItem}
         onExitDungeon={handleExitDungeon}
@@ -872,7 +989,7 @@ export default function CombatClient({ player, dungeon, boss, enemies }: Props) 
         isBossRoom={isBossRoom} isTraining={isTraining}
         safeTargetIndex={safeTargetIndex} aliveEnemies={aliveEnemies}
         targetEnemy={targetEnemy}
-        consecutiveBlocks={consecutiveBlocks} burnStates={burnStates}
+        consecutiveBlocks={consecutiveBlocks}
         availableSkills={availableSkills}
         showSkills={showSkills} showItems={showItems}
         consumables={consumables} loadingItems={loadingItems}

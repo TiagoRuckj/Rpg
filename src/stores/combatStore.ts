@@ -1,13 +1,12 @@
 import { create } from 'zustand'
-import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy, BurnState, RoomEvent, PlayerPoisonState } from '@/types/game'
-import { StatusEffect, applyBurn, applyPoison, toBurnStates, toPlayerPoisonState } from '@/lib/game/statusEffects'
+import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy, RoomEvent } from '@/types/game'
+import { StatusEffect, applyBurn, applyPoison, getPlayerPoisonInfo } from '@/lib/game/statusEffects'
 
 interface CombatStore extends CombatState {
   // Run state
   run: RunState
   consecutiveBlocks: number
   stunnedEnemyIds: number[]
-  burnStates: BurnState[]
 
   // Combat actions
   initCombat: (
@@ -27,22 +26,17 @@ interface CombatStore extends CombatState {
   reset: () => void
   setConsecutiveBlocks: (n: number) => void
   setStunnedEnemyIds: (ids: number[]) => void
-  setBurnStates: (states: BurnState[]) => void
   setCurrentEvent: (event: RoomEvent | null) => void
   setTargetIndex: (index: number) => void
-  setPoisonState: (state: PlayerPoisonState | null) => void
-  // Nuevo sistema unificado
   setStatusEffects: (effects: StatusEffect[]) => void
   applyBurnEffect: (instanceId: number) => void
   applyPoisonEffect: (damagePerTurn?: number, turnsLeft?: number) => void
-  // ── nuevo: reemplaza el array completo de enemigos en combate ─────────────
-  // Acepta array directo o función updater (similar a useState)
   setCurrentEnemies: (enemies: EnemyCombatState[] | ((prev: EnemyCombatState[]) => EnemyCombatState[])) => void
 
-  // ── sistema de turnos separados ───────────────────────────────────────────
-  combatPhase: 'idle' | 'player_acting' | 'enemy_acting' | 'phase_transition'
+  // Sistema de turnos separados
+  combatPhase: 'idle' | 'player_acting' | 'enemy_acting' | 'effects' | 'phase_transition'
   lastPlayerDamage: number
-  lastEnemyDamages: Record<number, number>   // instanceId → daño recibido por el jugador
+  lastEnemyDamages: Record<number, number>
   setCombatPhase: (phase: CombatStore['combatPhase']) => void
   setLastPlayerDamage: (dmg: number) => void
   setLastEnemyDamages: (dmgs: Record<number, number>) => void
@@ -80,7 +74,6 @@ const initialRunState: RunState = {
   bossDefeated: false,
   depth: 0,
   currentEvent: null,
-  poisonState: null,
   statusEffects: [],
 }
 
@@ -89,7 +82,6 @@ export const useCombatStore = create<CombatStore>((set) => ({
   run: initialRunState,
   consecutiveBlocks: 0,
   stunnedEnemyIds: [],
-  burnStates: [],
   combatPhase: 'idle' as const,
   lastPlayerDamage: 0,
   lastEnemyDamages: {},
@@ -104,7 +96,6 @@ export const useCombatStore = create<CombatStore>((set) => ({
     log: ['⚔️ ¡Comenzó el combate!'],
     consecutiveBlocks: 0,
     stunnedEnemyIds: [],
-    burnStates: [],
     run: {
       ...state.run,
       currentEnemies: enemies,
@@ -133,41 +124,26 @@ export const useCombatStore = create<CombatStore>((set) => ({
   setStatus: (status) => set({ status }),
   setConsecutiveBlocks: (n) => set({ consecutiveBlocks: n }),
   setStunnedEnemyIds: (ids) => set({ stunnedEnemyIds: ids }),
-  setBurnStates: (states) => set({ burnStates: states }),
   setCurrentEvent: (event) => set((state) => ({ run: { ...state.run, currentEvent: event } })),
-  setPoisonState: (poisonState) => set((state) => ({ run: { ...state.run, poisonState } })),
 
   setStatusEffects: (effects) => set((state) => ({
+    run: { ...state.run, statusEffects: effects },
+  })),
+
+  applyBurnEffect: (instanceId) => set((state) => ({
     run: {
       ...state.run,
-      statusEffects: effects,
-      poisonState: toPlayerPoisonState(effects),
+      statusEffects: applyBurn(instanceId, state.run.statusEffects),
     },
   })),
 
-  applyBurnEffect: (instanceId) => set((state) => {
-    const updated = applyBurn(instanceId, state.run.statusEffects)
-    return {
-      run: {
-        ...state.run,
-        statusEffects: updated,
-        burnStates: toBurnStates(updated),
-      },
-    }
-  }),
+  applyPoisonEffect: (damagePerTurn = 10, turnsLeft = 5) => set((state) => ({
+    run: {
+      ...state.run,
+      statusEffects: applyPoison(state.run.statusEffects, damagePerTurn, turnsLeft),
+    },
+  })),
 
-  applyPoisonEffect: (damagePerTurn = 10, turnsLeft = 5) => set((state) => {
-    const updated = applyPoison(state.run.statusEffects, damagePerTurn, turnsLeft)
-    return {
-      run: {
-        ...state.run,
-        statusEffects: updated,
-        poisonState: toPlayerPoisonState(updated),
-      },
-    }
-  }),
-
-  // Reemplaza el array completo — usado para adds invocados y aiState updates
   setCurrentEnemies: (enemies) => set((state) => ({
     run: {
       ...state.run,
@@ -187,7 +163,6 @@ export const useCombatStore = create<CombatStore>((set) => ({
     run: initialRunState,
     consecutiveBlocks: 0,
     stunnedEnemyIds: [],
-    burnStates: [],
     combatPhase: 'idle',
     lastPlayerDamage: 0,
     lastEnemyDamages: {},

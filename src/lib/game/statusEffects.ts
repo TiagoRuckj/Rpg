@@ -3,56 +3,114 @@
 // Para agregar un nuevo efecto:
 //   1. Agregar el tipo a StatusEffectType
 //   2. Agregar un case en processStatusEffects
-//   3. Exportar una función helper de aplicación (applyBurn, applyStun, etc.)
+//   3. Exportar una función helper de aplicación
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
-export type StatusEffectType = 'burn' | 'poison' | 'stun'
+export type StatusEffectType = 'burn' | 'poison' | 'stun' | 'buff' | 'debuff'
+
+// Qué stat modifica un buff/debuff
+export type StatTarget = 'attack' | 'defense' | 'magic' | 'damage'
 
 export interface StatusEffect {
   type: StatusEffectType
   target: 'enemy' | 'player'
   turnsLeft: number
-  value: number          // daño fijo por turno (poison), % del HP actual (burn), 0 (stun)
+  value: number          // daño/turno (poison, burn), multiplicador (buff/debuff), 0 (stun)
   instanceId?: number    // requerido cuando target === 'enemy'
+  stat?: StatTarget      // requerido cuando type === 'buff' | 'debuff'
 }
 
 // ─── Helpers de aplicación ───────────────────────────────────────────────────
+
+// ─── Constantes de efectos estándar ──────────────────────────────────────────
+
+export const BURN_VALUE_START = 0.01   // % del HP actual — turno 1
+export const BURN_VALUE_MAX   = 0.05   // % del HP actual — tope (turno 5+)
+export const BURN_VALUE_STEP  = 0.01   // cuánto sube por turno continuo
+export const POISON_DAMAGE    = 10     // daño fijo por turno
+export const POISON_TURNS     = 5      // turnos por defecto
 
 export function applyBurn(
   instanceId: number,
   existing: StatusEffect[],
   turnsLeft = 3,
 ): StatusEffect[] {
-  const alreadyBurning = existing.some(
-    e => e.type === 'burn' && e.instanceId === instanceId
-  )
-  if (alreadyBurning) return existing
-  return [...existing, { type: 'burn', target: 'enemy', turnsLeft, value: 0.05, instanceId }]
+  const current = existing.find(e => e.type === 'burn' && e.instanceId === instanceId)
+  if (current) {
+    // Ya está quemado — refrescar turnos sumando, mantener el % actual
+    return existing.map(e =>
+      e.type === 'burn' && e.instanceId === instanceId
+        ? { ...e, turnsLeft: e.turnsLeft + turnsLeft }
+        : e
+    )
+  }
+  // Nueva quemadura — empieza en 1%
+  return [...existing, { type: 'burn', target: 'enemy', turnsLeft, value: BURN_VALUE_START, instanceId }]
 }
 
 export function applyPoison(
   existing: StatusEffect[],
-  damagePerTurn = 10,
-  turnsLeft = 5,
+  damagePerTurn = POISON_DAMAGE,
+  turnsLeft = POISON_TURNS,
 ): StatusEffect[] {
-  // Si ya está envenenado, resetear turnos (no acumular)
+  // Resetear turnos si ya está envenenado (no acumular)
   const withoutPoison = existing.filter(e => e.type !== 'poison')
   return [...withoutPoison, { type: 'poison', target: 'player', turnsLeft, value: damagePerTurn }]
 }
 
-// Stun sobre un enemigo: lo salta el turno actual Y el siguiente.
-// turnsLeft = 2 → se procesa este turno (→1) y el siguiente (→0 y se descarta).
-// combatActions ya chequea stunnedPrevTurn vía stunnedEnemyIds; este efecto
-// garantiza que el store sepa qué enemigos están stuneados incluso sin martillo.
 export function applyStun(
   instanceId: number,
   existing: StatusEffect[],
   turnsLeft = 2,
 ): StatusEffect[] {
-  // Si ya está stuneado, no acumular — solo refrescar si queda menos tiempo
   const withoutStun = existing.filter(e => !(e.type === 'stun' && e.instanceId === instanceId))
   return [...withoutStun, { type: 'stun', target: 'enemy', turnsLeft, value: 0, instanceId }]
+}
+
+// Buff sobre un enemigo (ej: el Rey Goblin se buffea a sí mismo)
+export function applyEnemyBuff(
+  instanceId: number,
+  stat: StatTarget,
+  multiplier: number,
+  existing: StatusEffect[],
+  turnsLeft = 3,
+): StatusEffect[] {
+  // Si ya tiene ese buff activo, refrescar turnos
+  const withoutBuff = existing.filter(e => !(e.type === 'buff' && e.instanceId === instanceId && e.stat === stat))
+  return [...withoutBuff, { type: 'buff', target: 'enemy', turnsLeft, value: multiplier, instanceId, stat }]
+}
+
+// Debuff sobre el jugador (ej: Rey Goblin intimida reduciendo el ataque del jugador)
+export function applyPlayerDebuff(
+  stat: StatTarget,
+  multiplier: number,
+  existing: StatusEffect[],
+  turnsLeft = 3,
+): StatusEffect[] {
+  // Si ya tiene ese debuff activo, refrescar turnos
+  const withoutDebuff = existing.filter(e => !(e.type === 'debuff' && e.target === 'player' && e.stat === stat))
+  return [...withoutDebuff, { type: 'debuff', target: 'player', turnsLeft, value: multiplier, stat }]
+}
+
+export function getPlayerPoisonInfo(effects: StatusEffect[]): { turnsLeft: number; damagePerTurn: number } | null {
+  const poison = effects.find(e => e.type === 'poison')
+  if (!poison) return null
+  return { turnsLeft: poison.turnsLeft, damagePerTurn: poison.value }
+}
+
+// Lee el multiplicador acumulado de un stat del jugador desde los efectos activos
+export function getPlayerStatMult(effects: StatusEffect[], stat: StatTarget): number {
+  return effects
+    .filter(e => e.target === 'player' && e.type === 'debuff' && e.stat === stat)
+    .reduce((acc, e) => acc * e.value, 1)
+}
+
+// Lee el multiplicador acumulado de un stat de un enemigo desde los efectos activos
+export function getEnemyStatMult(effects: StatusEffect[], instanceId: number, stat: StatTarget): number {
+  return effects
+    .filter(e => e.target === 'enemy' && e.type === 'buff' && e.instanceId === instanceId && e.stat === stat)
+    .reduce((acc, e) => acc * e.value, 1)
 }
 
 // ─── Procesamiento por turno ──────────────────────────────────────────────────
@@ -63,9 +121,9 @@ export interface EnemyHPMap {
 
 export interface ProcessEffectsResult {
   updatedEffects: StatusEffect[]
-  enemyHPDeltas: EnemyHPMap      // daño aplicado a cada enemigo (negativo)
-  playerHPDelta: number           // daño total aplicado al jugador (negativo)
-  stunnedEnemyIds: number[]       // enemigos que no pueden atacar este turno por stun
+  enemyHPDeltas: EnemyHPMap
+  playerHPDelta: number
+  stunnedEnemyIds: number[]
   log: string[]
 }
 
@@ -86,14 +144,26 @@ export function processStatusEffects(
       case 'burn': {
         const id = effect.instanceId!
         const currentHP = (enemyCurrentHPs[id] ?? 0) + (enemyHPDeltas[id] ?? 0)
-        if (currentHP <= 0) continue  // enemigo ya muerto, descartar efecto
+        if (currentHP <= 0) continue
 
         const dmg = Math.max(1, Math.round(currentHP * effect.value))
         enemyHPDeltas[id] = (enemyHPDeltas[id] ?? 0) - dmg
 
         const name = enemyNames[id] ?? 'Enemigo'
-        const remaining = effect.turnsLeft
-        log.push(`🔥 ${name} sufre ${dmg} de daño por quemadura! (${remaining} turno${remaining !== 1 ? 's' : ''} restante${remaining !== 1 ? 's' : ''})`)
+        const pct  = Math.round(effect.value * 100)
+
+        if (effect.turnsLeft > 1) {
+          const nextEffect = {
+            ...effect,
+            turnsLeft: effect.turnsLeft - 1,
+            value: Math.min(BURN_VALUE_MAX, effect.value + BURN_VALUE_STEP),
+          }
+          updatedEffects.push(nextEffect)
+          const remaining = nextEffect.turnsLeft
+          log.push(`🔥 ${name} sufre ${dmg} de daño por quemadura (${pct}%)! (${remaining} turno${remaining !== 1 ? 's' : ''} restante${remaining !== 1 ? 's' : ''})`)
+          continue
+        }
+        log.push(`🔥 ${name} sufre ${dmg} de daño por quemadura (${pct}%)! (último turno)`)
         break
       }
 
@@ -107,12 +177,22 @@ export function processStatusEffects(
       case 'stun': {
         const id = effect.instanceId!
         const currentHP = enemyCurrentHPs[id] ?? 0
-        if (currentHP <= 0) continue  // enemigo muerto, descartar
-
+        if (currentHP <= 0) continue
         stunnedEnemyIds.push(id)
         const name = enemyNames[id] ?? 'Enemigo'
         const remaining = effect.turnsLeft
         log.push(`🔨 ${name} está aturdido! (${remaining} turno${remaining !== 1 ? 's' : ''} restante${remaining !== 1 ? 's' : ''})`)
+        break
+      }
+
+      case 'buff': {
+        // Los buffs de enemigos no tienen efecto por turno — solo modifican stats pasivamente.
+        // Se loguean solo el primer turno (turnsLeft == valor inicial).
+        break
+      }
+
+      case 'debuff': {
+        // Los debuffs sobre el jugador tampoco tienen efecto por turno — modifican stats pasivamente.
         break
       }
 
@@ -124,32 +204,4 @@ export function processStatusEffects(
   }
 
   return { updatedEffects, enemyHPDeltas, playerHPDelta, stunnedEnemyIds, log }
-}
-
-// ─── Compatibilidad con el store ─────────────────────────────────────────────
-
-export function toBurnStates(effects: StatusEffect[]): { instanceId: number; turnsLeft: number }[] {
-  return effects
-    .filter(e => e.type === 'burn' && e.instanceId !== undefined)
-    .map(e => ({ instanceId: e.instanceId!, turnsLeft: e.turnsLeft }))
-}
-
-export function toPlayerPoisonState(effects: StatusEffect[]): { turnsLeft: number; damagePerTurn: number } | null {
-  const poison = effects.find(e => e.type === 'poison')
-  if (!poison) return null
-  return { turnsLeft: poison.turnsLeft, damagePerTurn: poison.value }
-}
-
-export function fromLegacy(
-  burnStates: { instanceId: number; turnsLeft: number }[],
-  poisonState: { turnsLeft: number; damagePerTurn: number } | null,
-): StatusEffect[] {
-  const effects: StatusEffect[] = []
-  for (const b of burnStates) {
-    effects.push({ type: 'burn', target: 'enemy', turnsLeft: b.turnsLeft, value: 0.05, instanceId: b.instanceId })
-  }
-  if (poisonState) {
-    effects.push({ type: 'poison', target: 'player', turnsLeft: poisonState.turnsLeft, value: poisonState.damagePerTurn })
-  }
-  return effects
 }

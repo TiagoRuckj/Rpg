@@ -43,153 +43,283 @@ function aiLog(tier: string, enemyName: string, data: Record<string, unknown>) {
   _aiDebugLogs.push({ tier, enemyName, data })
 }
 
+// ─── Helper: selección de habilidad objetivo ─────────────────────────────────
+// Elige aleatoriamente entre las habilidades que cuestan energía (las "especiales").
+// Se llama cuando nextActionId es null — al inicio o después de usar una habilidad.
+
+function pickNextSpecial(actions: EnemyAction[]): EnemyAction | null {
+  const specials = actions.filter(a => (a.energy_cost ?? 0) > 0)
+  if (specials.length === 0) return null
+  return specials[Math.floor(Math.random() * specials.length)]
+}
+
 // ─── Tier: dumb ───────────────────────────────────────────────────────────────
-// Ataca siempre. Al llegar a energy_threshold, usa su habilidad especial.
+// Elige una habilidad objetivo al inicio (o tras usarla) y acumula energía hacia ella.
+// Cuando tiene energía suficiente la usa y elige la siguiente.
 
 function resolveDumb(
   actions: EnemyAction[],
   aiState: EnemyAiState,
-  threshold: number,
-  enemyName: string
-): { action: EnemyAction; resetEnergy: boolean } {
-  const nextEnergy = aiState.energy + 1
+  currentEnergy: number,
+  enemyName: string,
+  maxEnergy: number,
+): { action: EnemyAction; resetEnergy: boolean; nextActionId: number | null } {
+  const normalAttack = actions
+    .filter(a => a.type === 'attack' && (a.energy_cost ?? 0) === 0)
+    .sort((a, b) => (a.effect.damage_multiplier ?? 1) - (b.effect.damage_multiplier ?? 1))[0]
+    ?? actions.filter(a => a.type === 'attack')[0]
+    ?? actions[0]
 
-  if (nextEnergy >= threshold) {
-    const special = actions
-      .filter(a => a.type !== 'attack')
-      .sort((a, b) => b.base_weight - a.base_weight)[0]
-      ?? actions
-        .filter(a => a.type === 'attack')
-        .sort((a, b) => (b.effect.damage_multiplier ?? 1) - (a.effect.damage_multiplier ?? 1))[0]
-    const action = special ?? actions[0]
-    aiLog('dumb', enemyName, {
-      reason: 'especial (umbral alcanzado)',
-      energy: `${aiState.energy} → reset`,
-      threshold,
-      chosen: action.name,
-      type: action.type,
-    })
-    return { action, resetEnergy: true }
+  // Resolver o elegir la habilidad objetivo
+  let target = aiState.nextActionId !== null
+    ? actions.find(a => a.id === aiState.nextActionId) ?? null
+    : null
+
+  if (!target) {
+    target = pickNextSpecial(actions)
   }
 
-  const normal = actions
-    .filter(a => a.type === 'attack')
-    .sort((a, b) => (a.effect.damage_multiplier ?? 1) - (b.effect.damage_multiplier ?? 1))[0]
-    ?? actions[0]
+  // Si no hay especiales, siempre ataque normal
+  if (!target) {
+    aiLog('dumb', enemyName, {
+      reason: 'sin habilidades — ataque normal',
+      energy: `${currentEnergy} → ${Math.min(currentEnergy + 1, maxEnergy)}`,
+      maxEnergy,
+      chosen: normalAttack.name,
+      type: normalAttack.type,
+    })
+    return { action: normalAttack, resetEnergy: false, nextActionId: null }
+  }
+
+  const targetCost = target.energy_cost ?? 0
+
+  // Tiene energía suficiente — usar la habilidad objetivo
+  if (currentEnergy >= targetCost) {
+    aiLog('dumb', enemyName, {
+      reason: `energía lista — ${target.name}`,
+      energy: `${currentEnergy} → 0`,
+      maxEnergy,
+      chosen: target.name,
+      type: target.type,
+    })
+    return { action: target, resetEnergy: true, nextActionId: null }
+  }
+
+  // Aún acumulando
   aiLog('dumb', enemyName, {
-    reason: 'ataque normal',
-    energy: `${aiState.energy} → ${nextEnergy} / ${threshold}`,
-    chosen: normal.name,
-    type: normal.type,
+    reason: `acumulando para ${target.name} (necesita ${targetCost})`,
+    energy: `${currentEnergy} → ${Math.min(currentEnergy + 1, targetCost)}/${targetCost}`,
+    maxEnergy,
+    chosen: normalAttack.name,
+    type: normalAttack.type,
   })
-  return { action: normal, resetEnergy: false }
+  return { action: normalAttack, resetEnergy: false, nextActionId: target.id }
 }
 
 // ─── Tier: medium ─────────────────────────────────────────────────────────────
-// Pesos contextuales — reacciona al estado sin anticipar.
+// Árbol de decisión con tres zonas de HP:
+//
+//   HP > 50%  → ataque fuerte si puede pagarlo, si no ataque normal
+//   HP 30-50% → ataque fuerte solo si después de pagarlo queda energía para curarse
+//               si no, ataque normal acumulando energía
+//   HP < 30%  → curación si puede pagarla, si no ataque normal esperando energía
 
-function weightedSample(actions: EnemyAction[], weights: number[]): EnemyAction {
-  const total = weights.reduce((s, w) => s + w, 0)
-  let r = Math.random() * total
-  for (let i = 0; i < actions.length; i++) {
-    r -= weights[i]
-    if (r <= 0) return actions[i]
+function resolveMedium(
+  actions: EnemyAction[],
+  aiState: EnemyAiState,
+  ctx: EnemyCombatContext,
+  currentEnergy: number,
+  enemyName: string,
+  maxEnergy: number,
+): { action: EnemyAction; resetEnergy: boolean; nextActionId: number | null } {
+  const selfHpPct = ctx.selfHP / ctx.selfMaxHP
+
+  const healAction = actions
+    .filter(a => a.type === 'recuperacion')
+    .sort((a, b) => (b.effect.heal_pct ?? 0) - (a.effect.heal_pct ?? 0))[0]
+
+  const nonHealActions = actions.filter(a => a.type !== 'recuperacion' && (a.energy_cost ?? 0) > 0)
+
+  const normalAttack = actions
+    .filter(a => a.type === 'attack' && (a.energy_cost ?? 0) === 0)
+    .sort((a, b) => (a.effect.damage_multiplier ?? 1) - (b.effect.damage_multiplier ?? 1))[0]
+    ?? actions.filter(a => a.type === 'attack')[0]
+    ?? actions[0]
+
+  const healCost = healAction ? (healAction.energy_cost ?? 0) : Infinity
+  const canHeal  = currentEnergy >= healCost
+
+  const logAndReturn = (reason: string, action: EnemyAction, reset: boolean, nextId: number | null) => {
+    aiLog('medium', enemyName, {
+      reason,
+      energy: `${currentEnergy}`,
+      maxEnergy,
+      selfHP: `${Math.round(selfHpPct * 100)}`,
+      playerHP: `${Math.round((ctx.playerHP / ctx.playerMaxHP) * 100)}`,
+      chosen: action.name,
+      type: action.type,
+    })
+    return { action, resetEnergy: reset, nextActionId: nextId }
   }
-  return actions[actions.length - 1]
-}
 
-function resolveMedium(actions: EnemyAction[], ctx: EnemyCombatContext, availableEnergy: number, enemyName: string): EnemyAction {
-  const selfHpPct   = ctx.selfHP   / ctx.selfMaxHP
-  const playerHpPct = ctx.playerHP / ctx.playerMaxHP
+  // ── HP < 30% — restauración prioritaria, cancela cualquier otra intención ──
+  if (selfHpPct < 0.30) {
+    if (!healAction) {
+      // No tiene restauración — ataque normal
+      return logAndReturn('HP crítico (sin restauración)', normalAttack, false, null)
+    }
+    if (canHeal) return logAndReturn('HP crítico — restauración', healAction, true, null)
+    return logAndReturn('HP crítico — acumulando para restauración', normalAttack, false, healAction.id)
+  }
 
-  const weights = actions.map(a => {
-    let w = a.base_weight
-    if (a.type === 'recuperacion' && selfHpPct < 0.30) w += 40
-    if (a.type === 'recuperacion' && selfHpPct < 0.50) w += 20
-    if (a.type === 'attack' && ctx.playerActiveEffects.length > 0) w += 15
-    if (a.type === 'attack' && playerHpPct < 0.25 && (a.effect.damage_multiplier ?? 1) > 1.2) w += 25
-    if (ctx.turn % 2 === 0 && a.type === 'extra') w += 10
-    return Math.max(1, w)
-  })
+  // ── HP 30-50% — baraja skills no-restauración, pero reserva energía para curar ──
+  if (selfHpPct < 0.50) {
+    if (!healAction) {
+      // Sin restauración — comportarse como zona alta
+    } else {
+      // Resolver o elegir skill objetivo (excluyendo restauración)
+      let target = aiState.nextActionId !== null && aiState.nextActionId !== healAction.id
+        ? actions.find(a => a.id === aiState.nextActionId) ?? null
+        : null
+      if (!target && nonHealActions.length > 0) {
+        target = nonHealActions[Math.floor(Math.random() * nonHealActions.length)]
+      }
 
-  const chosen = weightedSample(actions, weights)
-  aiLog('medium', enemyName, {
-    selfHP: `${Math.round(selfHpPct * 100)}%`,
-    playerHP: `${Math.round(playerHpPct * 100)}%`,
-    playerEffects: ctx.playerActiveEffects,
-    turn: ctx.turn,
-    energy: availableEnergy,
-    weights: actions.map((a, i) => `${a.name}(cost:${a.energy_cost ?? 0}):${weights[i]}`),
-    chosen: chosen.name,
-    type: chosen.subtype ? `${chosen.type}/${chosen.subtype}` : chosen.type,
-    cost: chosen.energy_cost ?? 0,
-  })
-  return chosen
+      if (target) {
+        const targetCost = target.energy_cost ?? 0
+        const canUseAndStillHeal = currentEnergy >= targetCost && (currentEnergy - targetCost) >= healCost
+        if (canUseAndStillHeal) return logAndReturn('skill + reserva para curar', target, true, null)
+        // No puede usar la skill sin comprometer la curación — acumular
+        return logAndReturn('vida media — acumulando (reservando para curar)', normalAttack, false, target.id)
+      }
+    }
+  }
+
+  // ── HP > 50% — baraja cualquier skill excepto restauración ──
+  let target = aiState.nextActionId !== null
+    ? actions.find(a => a.id === aiState.nextActionId && a.type !== 'recuperacion') ?? null
+    : null
+  if (!target && nonHealActions.length > 0) {
+    target = nonHealActions[Math.floor(Math.random() * nonHealActions.length)]
+  }
+
+  if (!target) {
+    // Solo tiene restauración o sin skills — ataque normal
+    return logAndReturn('sin skills ofensivas — ataque normal', normalAttack, false, null)
+  }
+
+  const targetCost = target.energy_cost ?? 0
+  if (currentEnergy >= targetCost) return logAndReturn(`HP alto — ${target.name}`, target, true, null)
+  return logAndReturn(`HP alto — acumulando para ${target.name}`, normalAttack, false, target.id)
 }
 
 // ─── Tier: smart ──────────────────────────────────────────────────────────────
-// Árbol de decisión generalizado por tipos y efectos — sin hardcodear nombres.
+// Analiza su arsenal y el estado del combate para tomar decisiones situacionales.
+// Prioridades: curación > remate > reacción defensiva > control > presión ofensiva > acumular
 
-function resolveSmart(actions: EnemyAction[], ctx: EnemyCombatContext, availableEnergy: number, enemyName: string): EnemyAction {
+function resolveSmart(
+  actions: EnemyAction[],
+  ctx: EnemyCombatContext,
+  currentEnergy: number,
+  enemyName: string,
+  maxEnergy: number,
+): EnemyAction {
   const selfHpPct   = ctx.selfHP   / ctx.selfMaxHP
   const playerHpPct = ctx.playerHP / ctx.playerMaxHP
 
-  const healAction   = actions.find(a => a.type === 'recuperacion')
-  const poisonAction = actions.find(a => a.type === 'extra' && a.effect.apply_effect === 'poison')
-  const stunAction   = actions.find(a => a.type === 'extra' && a.effect.apply_effect === 'stun')
-  const strongAtk    = actions
-    .filter(a => a.type === 'attack')
-    .sort((a, b) => (b.effect.damage_multiplier ?? 1) - (a.effect.damage_multiplier ?? 1))[0]
-  const normalAtk    = actions
-    .filter(a => a.type === 'attack')
-    .sort((a, b) => (a.effect.damage_multiplier ?? 1) - (b.effect.damage_multiplier ?? 1))[0]
+  // ── Clasificar arsenal ────────────────────────────────────────────────────
+  const healAction    = actions.filter(a => a.type === 'recuperacion')
+                               .sort((a, b) => (b.effect.heal_pct ?? 0) - (a.effect.heal_pct ?? 0))[0]
+  const offensiveBuff = actions.filter(a => a.type === 'buff' && (a.effect.stat_target === 'attack' || a.effect.stat_target === 'damage'))
+                               .sort((a, b) => (a.energy_cost ?? 0) - (b.energy_cost ?? 0))[0]
+  const defensiveBuff = actions.filter(a => a.type === 'buff' && (a.effect.stat_target === 'defense' || a.effect.stat_target === 'resistance'))
+                               .sort((a, b) => (a.energy_cost ?? 0) - (b.energy_cost ?? 0))[0]
+  const magicDebuff   = actions.filter(a => a.type === 'debuff' && (a.effect.stat_target === 'magic' || a.effect.stat_target === 'mana'))
+                               .sort((a, b) => (a.energy_cost ?? 0) - (b.energy_cost ?? 0))[0]
+  const generalDebuff = actions.filter(a => a.type === 'debuff')
+                               .sort((a, b) => (a.energy_cost ?? 0) - (b.energy_cost ?? 0))[0]
+  const strongAtk     = actions.filter(a => a.type === 'attack' && (a.effect.damage_multiplier ?? 1) > 1.0)
+                               .sort((a, b) => (b.effect.damage_multiplier ?? 1) - (a.effect.damage_multiplier ?? 1))[0]
+  const normalAtk     = actions.filter(a => a.type === 'attack')
+                               .sort((a, b) => (a.effect.damage_multiplier ?? 1) - (b.effect.damage_multiplier ?? 1))[0]
+                               ?? actions[0]
 
-  const playerPoisoned = ctx.playerActiveEffects.includes('poison')
-  const playerStunned  = ctx.playerActiveEffects.includes('stun')
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const canAfford = (a: EnemyAction | undefined): a is EnemyAction =>
+    !!a && currentEnergy >= (a.energy_cost ?? 0)
+
+  const playerUsesMagic = ctx.playerMana > 0 && ctx.playerMana < ctx.playerMaxMana
+  const selfPoisoned    = ctx.selfActiveEffects.includes('poison')
+  const isEarlyGame     = ctx.turn <= 2
+  const buffApplied     = ctx.selfActiveEffects.includes('buff')
+  const debuffApplied   = ctx.playerActiveEffects.includes('debuff')
 
   const logAndReturn = (reason: string, action: EnemyAction) => {
     aiLog('smart', enemyName, {
       reason,
-      selfHP: `${Math.round(selfHpPct * 100)}%`,
-      playerHP: `${Math.round(playerHpPct * 100)}%`,
-      playerEffects: ctx.playerActiveEffects,
-      stamina: `${ctx.playerStamina}/${ctx.playerMaxStamina}`,
-      mana: `${ctx.playerMana}/${ctx.playerMaxMana}`,
-      energy: availableEnergy,
+      energy: `${currentEnergy}`,
+      maxEnergy,
+      selfHP: `${Math.round(selfHpPct * 100)}`,
+      playerHP: `${Math.round(playerHpPct * 100)}`,
       chosen: action.name,
       type: action.type,
-      cost: action.energy_cost ?? 0,
     })
     return action
   }
 
-  // 1. Curar si HP crítico (<20%)
-  if (selfHpPct < 0.20 && healAction) return logAndReturn('curar_critico (<20%)', healAction)
-
-  // 2. Remate si jugador casi muerto (<20%)
-  if (playerHpPct < 0.20 && strongAtk) return logAndReturn('remate_jugador (<20%)', strongAtk)
-
-  // 3. Stun si jugador tiene recursos altos y no está stunneado
-  if (!playerStunned && stunAction &&
-      ctx.playerStamina > ctx.playerMaxStamina * 0.6 &&
-      ctx.playerMana    > ctx.playerMaxMana    * 0.6) {
-    return logAndReturn('stun (recursos jugador altos)', stunAction)
+  // ── 1. Modo desesperado: HP crítico y curación no viable ─────────────────
+  // Si estoy muy bajo y curarme no cambia el resultado, todo el daño posible
+  if (selfHpPct < 0.20 && canAfford(healAction)) {
+    return logAndReturn('HP crítico — curación de emergencia', healAction)
+  }
+  if (selfHpPct < 0.15 && canAfford(strongAtk)) {
+    return logAndReturn('HP crítico sin curación — todo el daño posible', strongAtk)
   }
 
-  // 4. Veneno si jugador no está envenenado y tiene HP alto
-  if (!playerPoisoned && poisonAction && playerHpPct > 0.40) return logAndReturn('veneno (jugador sano)', poisonAction)
-
-  // 5. Curar si HP moderado (<40%)
-  if (selfHpPct < 0.40 && healAction) return logAndReturn('curar_moderado (<40%)', healAction)
-
-  // 6. Ataque fuerte si jugador en HP medio
-  if (playerHpPct < 0.50 && strongAtk && (strongAtk.effect.damage_multiplier ?? 1) > 1.3) {
-    return logAndReturn('ataque_fuerte (jugador <50%)', strongAtk)
+  // ── 2. Remate: jugador casi muerto ────────────────────────────────────────
+  if (playerHpPct < 0.25 && canAfford(strongAtk)) {
+    return logAndReturn('remate — jugador débil', strongAtk)
   }
 
-  // 7. Fallback: ataque normal
-  const fallback = normalAtk ?? actions[0]
-  return logAndReturn('fallback (ataque_normal)', fallback)
+  // ── 3. Curación preventiva: HP bajo-medio ─────────────────────────────────
+  if (selfHpPct < 0.40 && canAfford(healAction)) {
+    return logAndReturn('curación preventiva — HP bajo', healAction)
+  }
+
+  // ── 4. Apertura: buffeo ofensivo en primeros turnos ──────────────────────
+  if (isEarlyGame && !buffApplied && canAfford(offensiveBuff)) {
+    return logAndReturn('apertura — buff ofensivo', offensiveBuff)
+  }
+
+  // ── 5. Reacción defensiva: buff defensivo si el jugador pega fuerte ───────
+  // El jugador "pega fuerte" si causó más del 15% del HP máximo en daño reciente
+  const playerHitHard = selfHpPct < 0.70 && (1 - selfHpPct) > 0.15
+  if (playerHitHard && !buffApplied && canAfford(defensiveBuff)) {
+    return logAndReturn('reacción defensiva — buff defensivo', defensiveBuff)
+  }
+
+  // ── 6. Debuff mágico: jugador usa magia y no está debuffeado ─────────────
+  if (playerUsesMagic && !debuffApplied && canAfford(magicDebuff)) {
+    return logAndReturn('debuff mágico — reducir daño mágico', magicDebuff)
+  }
+
+  // ── 7. Debuff general: jugador sano y sin debuff activo ──────────────────
+  if (playerHpPct > 0.60 && !debuffApplied && canAfford(generalDebuff)) {
+    return logAndReturn('debuff general — debilitar al rival', generalDebuff)
+  }
+
+  // ── 8. Presión ofensiva: jugador en rango medio ───────────────────────────
+  if (playerHpPct < 0.60 && canAfford(strongAtk)) {
+    return logAndReturn('presión ofensiva — ataque fuerte', strongAtk)
+  }
+
+  // ── 9. Ataque fuerte si puede ─────────────────────────────────────────────
+  if (canAfford(strongAtk)) {
+    return logAndReturn('ataque fuerte', strongAtk)
+  }
+
+  // ── 10. Fallback: ataque normal acumulando ────────────────────────────────
+  return logAndReturn('acumulando energía', normalAtk)
 }
 
 // ─── Resolución de acción → EnemyActionResult ─────────────────────────────────
@@ -210,9 +340,10 @@ function buildActionResult(
   switch (action.type) {
     case 'attack': {
       const mult = action.effect.damage_multiplier ?? 1.0
-      const base = enemyAttack * mult
-      damageToPlayer = Math.max(1, Math.round(base * (0.8 + Math.random() * 0.4)))
-      log.push(`👹 ${action.label} por ${damageToPlayer} de daño!`)
+      // Daño bruto — variación y defensa del jugador se aplican en combatActions
+      damageToPlayer = Math.round(enemyAttack * mult)
+      // El log con el daño real lo genera combatActions después de resolveEnemyAttack
+      log.push(`👹 ${action.label}`)
       break
     }
     case 'extra': {
@@ -234,10 +365,20 @@ function buildActionResult(
       break
     }
     case 'buff': {
+      // Buff sobre el propio enemigo — el efecto se aplica en combatActions via newEnemyEffects
+      if (action.effect.stat_target && action.effect.stat_mult) {
+        newPlayerEffects.push(`enemy_buff:${action.effect.stat_target}:${action.effect.stat_mult}`)
+      }
       log.push(`✨ ${action.label}!`)
       break
     }
     case 'debuff': {
+      // Debuff sobre el jugador — el efecto se aplica en combatActions via newPlayerEffects
+      if (action.effect.stat_target && action.effect.stat_mult) {
+        newPlayerEffects.push(`player_debuff:${action.effect.stat_target}:${action.effect.stat_mult}`)
+      } else if (action.effect.apply_effect) {
+        newPlayerEffects.push(action.effect.apply_effect)
+      }
       log.push(`⬇️ ${action.label}!`)
       break
     }
@@ -274,7 +415,6 @@ export interface ResolveEnemyActionInput {
   phases?: BossPhase[]
   activePhaseAction?: EnemyAction | null
   capPlayerDamage?: boolean
-  energyThreshold?: number   // umbral de disparo para tier 'dumb'
   energyPerTurn?: number     // cuánta energía regenera este turno
 }
 
@@ -303,77 +443,62 @@ export function resolveEnemyAction(input: ResolveEnemyActionInput): ResolveEnemy
     return { result, newAiState: { ...aiState } }
   }
 
-  // Sin acciones configuradas → ataque genérico (fallback legacy)
-  if (!availableActions.length) {
-    if (process.env.NODE_ENV === 'development') console.log(`%c[AI:legacy] ${enemyName}`, 'color:#9ca3af;font-weight:bold', {
-      reason: 'sin_acciones_configuradas — fallback ataque simple',
-      attack: enemy.enemy.stats.attack,
-    })
-    const fallback: EnemyAction = {
-      id: -1, name: 'fallback',
-      label: `${enemy.enemy.name} ataca`,
-      type: 'attack', base_weight: 100,
-      energy_cost: 0,
-      effect: { damage_multiplier: 1.0 },
-    }
-    const result = buildActionResult(
-      fallback,
-      enemy.enemy.stats.attack * (enemy.statMults?.attack_mult ?? 1),
-      enemy.maxHP, enemy.currentHP, capPlayerDamage
-    )
-    return { result, newAiState: { ...aiState } }
-  }
+  // Sin acciones configuradas → usar ataque básico genérico como única acción
+  // Pasa por resolveDumb igual que cualquier otro enemigo para mantener energía consistente
+  const effectiveActions: EnemyAction[] = availableActions.length > 0
+    ? availableActions
+    : [{
+        id: -1, name: 'ataque_basico',
+        label: `${enemy.enemy.name} ataca`,
+        type: 'attack', base_weight: 100,
+        energy_cost: 0,
+        effect: { damage_multiplier: 1.0 },
+      }]
 
   const effectiveAttack = enemy.enemy.stats.attack * (enemy.statMults?.attack_mult ?? 1)
   const energyPerTurn = input.energyPerTurn ?? 1
   const maxEnergy = aiState.maxEnergy
+  const currentEnergy = aiState.energy  // energía ANTES de actuar — se suma al final del turno
 
-  // Regenerar energía este turno (con techo)
-  const energyAfterRegen = Math.min(aiState.energy + energyPerTurn, maxEnergy)
+  // Normalizar tiers legacy o desconocidos a smart
+  const knownTiers: AiTier[] = ['dumb', 'medium', 'smart']
+  const effectiveTier: AiTier = knownTiers.includes(aiState.tier) ? aiState.tier : 'smart'
 
-  // Filtrar acciones que el enemigo puede pagar con su energía actual
-  const affordableActions = availableActions.filter(a => (a.energy_cost ?? 0) <= energyAfterRegen)
-  // Siempre hay al menos un ataque gratis disponible como fallback
-  const actionsToUse = affordableActions.length > 0 ? affordableActions : availableActions.filter(a => a.type === 'attack')
+  let chosenAction: EnemyAction = effectiveActions.find(a => a.type === 'attack') ?? effectiveActions[0]
+  let newEnergy: number = Math.min(currentEnergy + energyPerTurn, maxEnergy)
 
-  let chosenAction: EnemyAction
-  let newEnergy = energyAfterRegen
+  let nextActionId = aiState.nextActionId ?? null
 
-  switch (aiState.tier) {
+  switch (effectiveTier) {
     case 'dumb': {
-      const threshold = input.energyThreshold ?? 3
-      const { action, resetEnergy } = resolveDumb(actionsToUse, aiState, threshold, enemyName)
+      const { action, resetEnergy, nextActionId: nextId } = resolveDumb(effectiveActions, aiState, currentEnergy, enemyName, maxEnergy)
       chosenAction = action
-      newEnergy = resetEnergy ? energyAfterRegen - (action.energy_cost ?? 0) : energyAfterRegen
+      newEnergy = resetEnergy ? 0 : Math.min(currentEnergy + energyPerTurn, maxEnergy)
+      nextActionId = nextId
       break
     }
-    case 'medium':
-      chosenAction = resolveMedium(actionsToUse, ctx, energyAfterRegen, enemyName)
-      newEnergy = energyAfterRegen - (chosenAction.energy_cost ?? 0)
+    case 'medium': {
+      const { action, resetEnergy, nextActionId: nextId } = resolveMedium(effectiveActions, aiState, ctx, currentEnergy, enemyName, maxEnergy)
+      chosenAction = action
+      newEnergy = resetEnergy ? 0 : Math.min(currentEnergy - (action.energy_cost ?? 0) + energyPerTurn, maxEnergy)
+      nextActionId = nextId
       break
+    }
     case 'smart':
-    case 'boss':
-      chosenAction = resolveSmart(actionsToUse, ctx, energyAfterRegen, enemyName)
-      newEnergy = energyAfterRegen - (chosenAction.energy_cost ?? 0)
+      chosenAction = resolveSmart(effectiveActions, ctx, currentEnergy, enemyName, maxEnergy)
+      newEnergy = Math.min(currentEnergy - (chosenAction.energy_cost ?? 0) + energyPerTurn, maxEnergy)
       break
-    default:
-      chosenAction = availableActions.find(a => a.type === 'attack') ?? availableActions[0]
-      newEnergy = energyAfterRegen - (chosenAction.energy_cost ?? 0)
-      if (process.env.NODE_ENV === 'development') console.log(`%c[AI:unknown] ${enemyName}`, 'color:#9ca3af', {
-        reason: 'tier_desconocido — ataque simple',
-        tier: aiState.tier,
-      })
   }
 
   const result = buildActionResult(
     chosenAction, effectiveAttack, enemy.maxHP, enemy.currentHP, capPlayerDamage
   )
 
-  return { result, newAiState: { ...aiState, energy: Math.max(0, newEnergy), maxEnergy } }
+  return { result, newAiState: { ...aiState, energy: Math.max(0, newEnergy), maxEnergy, nextActionId } }
 }
 
 // ─── Helper: inicializar aiState ──────────────────────────────────────────────
 
 export function initAiState(tier: AiTier, maxEnergy = 5): EnemyAiState {
-  return { tier, energy: 0, maxEnergy, activePhaseOrder: 0, triggeredPhases: [] }
+  return { tier, energy: 0, maxEnergy, activePhaseOrder: 0, triggeredPhases: [], nextActionId: null }
 }

@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { RoomEvent, Enemy, Dungeon, Boss, EnemyCombatState, PlayerPoisonState } from '@/types/game'
+import { RoomEvent, Enemy, Dungeon, Boss, EnemyCombatState } from '@/types/game'
+import { initAiState } from '@/lib/game/enemyAi'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -11,7 +12,7 @@ export interface EventEffect {
   gold?: number
   goldCost?: number        // gold que se descuenta del jugador (mercader)
   itemBought?: number      // item_id comprado al mercader
-  poison?: PlayerPoisonState
+  poison?: { turnsLeft: number; damagePerTurn: number }
   startCombat?: boolean
   combatEnemies?: EnemyCombatState[]
   isBoss?: boolean
@@ -117,11 +118,11 @@ export function EventPanel({
 
   function handleAmbush() {
     const count = Math.random() < 0.4 ? 2 : 1
-    const pool = enemies.filter(e => e.stats.attack > 0)
+    const pool = enemies.filter(e => e.stats.attack > 0 && e.id !== MIMIC_ENEMY_ID)
     const combatEnemies: EnemyCombatState[] = Array.from({ length: count }, (_, i) => {
       const enemy = pool[Math.floor(Math.random() * pool.length)]
       const scaledHP = Math.round(enemy.stats.hp * depthMult)
-      return { instanceId: Date.now() + i, enemy, currentHP: scaledHP, maxHP: scaledHP, alive: true, aiState: null, statMults: null }
+      return { instanceId: Date.now() + i, enemy, currentHP: scaledHP, maxHP: scaledHP, alive: true, aiState: initAiState('dumb', 3), statMults: null }
     })
     onResolve({ startCombat: true, combatEnemies, isBoss: false })
   }
@@ -136,6 +137,7 @@ export function EventPanel({
         stats: { hp: 70, attack: 18, defense: 7 },
         loot_table: [{ exp: 40, item_id: null, gold_max: 0, gold_min: 0, item_chance: 0 }],
         enemy_type: ['mimic'] as any,
+        max_energy: 3,
       }
       const scaledHP = Math.round(mimicTemplate.stats.hp * depthMult)
       const combatEnemies: EnemyCombatState[] = [{
@@ -144,7 +146,7 @@ export function EventPanel({
         currentHP: scaledHP,
         maxHP: scaledHP,
         alive: true,
-        aiState: null,
+        aiState: initAiState('dumb', mimicTemplate.max_energy),
         statMults: null,
       }]
       onResolve({ startCombat: true, combatEnemies, isBoss: false, mimicGold: chestGold })
@@ -165,11 +167,12 @@ export function EventPanel({
         stats: { hp, attack: granGoblinBoss.stats.attack, defense: granGoblinBoss.stats.defense },
         loot_table: [],
         enemy_type: granGoblinBoss.enemy_type,
+        max_energy: granGoblinBoss.max_energy,
       },
       currentHP: hp,
       maxHP: hp,
       alive: true,
-      aiState: null,
+      aiState: initAiState('dumb', granGoblinBoss.max_energy),
       statMults: null,
     }]
     onResolve({ startCombat: true, combatEnemies, isBoss: true })

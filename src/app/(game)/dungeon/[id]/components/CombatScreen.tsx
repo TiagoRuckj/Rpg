@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useState } from 'react'
 import { Player, Dungeon, Boss, Enemy, CombatAction, PlayerSkill, EnemyCombatState, RunState } from '@/types/game'
+import { StatusEffect } from '@/lib/game/statusEffects'
 import { ItemUsed } from '@/actions/combatActions'
 import { PlayerHUD } from './PlayerHUD'
 
@@ -30,7 +31,7 @@ interface CombatScreenProps {
   aliveEnemies: EnemyCombatState[]
   targetEnemy: EnemyCombatState | undefined
   consecutiveBlocks: number
-  burnStates: { instanceId: number; turnsLeft: number }[]
+
   availableSkills: PlayerSkill[]
   showSkills: boolean
   showItems: boolean
@@ -40,7 +41,7 @@ interface CombatScreenProps {
   enemyAnimStates: Record<number, EnemyAnimState>
   playerAnimState: PlayerAnimState
   floatingDamages: Array<{ id: number; instanceId: number; value: number; isCrit: boolean; isPlayer: boolean }>
-  combatPhase: 'idle' | 'player_acting' | 'enemy_acting' | 'phase_transition'
+  combatPhase: 'idle' | 'player_acting' | 'enemy_acting' | 'effects' | 'phase_transition'
   // Callbacks
   onAction: (action: CombatAction, skill?: PlayerSkill, itemUsed?: ItemUsed) => void
   onSetTargetIndex: (idx: number) => void
@@ -79,8 +80,47 @@ function FloatingDamage({ value, isCrit, isPlayer }: { value: number; isCrit: bo
 
 // ─── Sprite enemigo con animación ─────────────────────────────────────────────
 
+// ─── Badges de estado activo ─────────────────────────────────────────────────
+
+const EFFECT_CONFIG: Record<string, { icon: string; bg: string; label: string }> = {
+  burn:   { icon: '🔥', bg: 'bg-orange-600', label: 'Quemadura' },
+  poison: { icon: '☠️', bg: 'bg-purple-700', label: 'Veneno'    },
+  stun:   { icon: '🔨', bg: 'bg-yellow-600', label: 'Aturdido'  },
+  buff:   { icon: '✨', bg: 'bg-blue-600',   label: 'Buff'      },
+  debuff: { icon: '⬇️', bg: 'bg-red-700',    label: 'Debuff'    },
+}
+
+function StatusBadges({ effects }: { effects: StatusEffect[] }) {
+  if (effects.length === 0) return null
+  // Dedup por tipo — mostrar solo una badge por tipo con los turnos restantes
+  const seen = new Set<string>()
+  const unique = effects.filter(e => {
+    if (seen.has(e.type)) return false
+    seen.add(e.type)
+    return true
+  })
+  return (
+    <div className="flex gap-1 flex-wrap justify-center mt-1">
+      {unique.map(e => {
+        const cfg = EFFECT_CONFIG[e.type]
+        if (!cfg) return null
+        return (
+          <div
+            key={e.type}
+            title={`${cfg.label} (${e.turnsLeft}t)`}
+            className={`${cfg.bg} text-white text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5`}
+          >
+            <span>{cfg.icon}</span>
+            <span>{e.turnsLeft}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function EnemySprite({
-  enemy, isTarget, isBossRoom, isBoss, hpPct, animState, floatingDmgs, onSelect, disabled,
+  enemy, isTarget, isBossRoom, isBoss, hpPct, animState, floatingDmgs, activeEffects, onSelect, disabled,
 }: {
   enemy: EnemyCombatState
   isTarget: boolean
@@ -89,6 +129,7 @@ function EnemySprite({
   hpPct: number
   animState: EnemyAnimState
   floatingDmgs: Array<{ id: number; value: number; isCrit: boolean }>
+  activeEffects: StatusEffect[]
   onSelect: () => void
   disabled: boolean
 }) {
@@ -151,16 +192,18 @@ function EnemySprite({
         />
       </div>
       <span className="text-xs text-gray-400">{enemy.currentHP}/{enemy.maxHP}</span>
+      <StatusBadges effects={activeEffects} />
     </button>
   )
 }
 
 // ─── Sprite jugador con animación ─────────────────────────────────────────────
 
-function PlayerSprite({ name, animState, floatingDmgs }: {
+function PlayerSprite({ name, animState, floatingDmgs, activeEffects }: {
   name: string
   animState: PlayerAnimState
   floatingDmgs: Array<{ id: number; value: number; isCrit: boolean }>
+  activeEffects: StatusEffect[]
 }) {
   const shakeClass = animState === 'hit' ? 'animate-shake' : ''
 
@@ -189,6 +232,7 @@ function PlayerSprite({ name, animState, floatingDmgs }: {
         />
       </div>
       <span className="text-green-400 text-xs font-bold text-center">{name}</span>
+      <StatusBadges effects={activeEffects} />
     </div>
   )
 }
@@ -201,7 +245,7 @@ export function CombatScreen({
   turn, log, status, run, derived,
   isProcessing, isSaving, isBossRoom, isTraining,
   safeTargetIndex, aliveEnemies, targetEnemy,
-  consecutiveBlocks, burnStates,
+  consecutiveBlocks,
   availableSkills, showSkills, showItems, consumables, loadingItems,
   enemyAnimStates, playerAnimState, floatingDamages, combatPhase,
   onAction, onSetTargetIndex, onSetShowSkills, onOpenItems, onUseItem,
@@ -239,7 +283,9 @@ export function CombatScreen({
     ? '⚔️ Tu turno...'
     : combatPhase === 'enemy_acting'
       ? '👹 Turno enemigo...'
-      : combatPhase === 'phase_transition'
+      : combatPhase === 'effects'
+        ? '✨ Fin de turno...'
+        : combatPhase === 'phase_transition'
         ? '⚠️ Nueva fase...'
         : null
 
@@ -274,6 +320,7 @@ export function CombatScreen({
                 hpPct={hpPct}
                 animState={animState}
                 floatingDmgs={myFloats}
+                activeEffects={run.statusEffects.filter(ef => ef.target === 'enemy' && ef.instanceId === e.instanceId)}
                 onSelect={() => !isProcessing && status === 'active' && !isDead && onSetTargetIndex(idx)}
                 disabled={isProcessing || status !== 'active' || isDead}
               />
@@ -342,7 +389,7 @@ export function CombatScreen({
           maxHP={derived.max_hp}
           maxStamina={derived.max_stamina}
           maxMana={derived.max_mana}
-          poisonState={run.poisonState}
+          statusEffects={run.statusEffects}
           isBeingHit={playerAnimState === 'hit'}
         />
 
@@ -450,6 +497,7 @@ export function CombatScreen({
           floatingDmgs={floatingDamages
             .filter(f => f.isPlayer)
             .map(f => ({ id: f.id, value: f.value, isCrit: false }))}
+          activeEffects={run.statusEffects.filter(ef => ef.target === 'player')}
         />
       </div>
     </div>

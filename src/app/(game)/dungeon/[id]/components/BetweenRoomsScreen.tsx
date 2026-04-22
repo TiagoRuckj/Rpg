@@ -1,14 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
-  Player, Dungeon, Boss, Enemy, EnemyCombatState,
+  Player, Dungeon, Boss, Enemy, EnemyCombatState, EnemyAiConfig,
   RunState, depthMultiplier, rollEnemyCount,
   rollRoomEvent,
 } from '@/types/game'
 import { EventPanel, EventSheet, EventEffect } from './EventPanel'
 import { PlayerHUD } from './PlayerHUD'
-import { buyMerchantItemAction } from '@/actions/merchantActions'
+import { buyMerchantItemAction, flushRunGoldAction } from '@/actions/merchantActions'
 
 interface BetweenRoomsScreenProps {
   player: Player
@@ -32,17 +32,18 @@ interface BetweenRoomsScreenProps {
   setCurrentEnemy: (enemy: Enemy | null) => void
   initCombat: (hp: number, stamina: number, mana: number, enemies: EnemyCombatState[]) => void
   setStunnedEnemyIds: (ids: number[]) => void
-  setBurnStates: (states: any[]) => void
+  
   addLoot: (loot: { gold?: number }) => void
   advanceRoom: () => void
   setCurrentEvent: (event: any) => void
-  setPoisonState: (state: any) => void
+  applyPoisonEffect: (damagePerTurn?: number, turnsLeft?: number) => void
   setFightingEvent: (v: boolean) => void
   setMimicPendingGold: (gold: number) => void
   granGoblinBoss: Boss | null
   setGranGoblinBoss: (boss: Boss | null) => void
   nextInstanceId: () => number
-  buildEnemyCombatStates: (pool: Enemy[], count: number, depthMult: number, spawnTable?: any, room?: number) => EnemyCombatState[]
+  buildEnemyCombatStates: (pool: Enemy[], count: number, depthMult: number, spawnTable?: any, room?: number, aiConfigs?: EnemyAiConfig[]) => EnemyCombatState[]
+  aiConfigs: EnemyAiConfig[]
   // Callbacks
   onOpenRestConsumables: () => void
   onUseRestItem: (entryId: number) => void
@@ -60,10 +61,10 @@ export function BetweenRoomsScreen({
   playerHP, playerStamina, playerMana,
   run, derived, itemInfoMap, lastLoot, isSaving,
   setPlayerHP, setPhase, setCurrentEnemy,
-  initCombat, setStunnedEnemyIds, setBurnStates,
-  addLoot, advanceRoom, setCurrentEvent, setPoisonState,
+  initCombat, setStunnedEnemyIds,
+  addLoot, advanceRoom, setCurrentEvent, applyPoisonEffect,
   setFightingEvent, setMimicPendingGold, granGoblinBoss, setGranGoblinBoss,
-  nextInstanceId, buildEnemyCombatStates,
+  nextInstanceId, buildEnemyCombatStates, aiConfigs,
   onOpenRestConsumables, onUseRestItem, onExitDungeon,
   showRestConsumables, setShowRestConsumables,
   restConsumables, loadingRestItems, usingRestItem,
@@ -85,29 +86,48 @@ export function BetweenRoomsScreen({
           stats: { ...boss.stats, hp: scaledMaxHP },
           loot_table: [],
           enemy_type: boss.enemy_type,
+          max_energy: boss.max_energy,
         },
         currentHP: scaledMaxHP,
         maxHP: scaledMaxHP,
         alive: true,
-        aiState: { tier: 'boss', energy: 0, maxEnergy: 8, activePhaseOrder: 0, triggeredPhases: [] },
+        aiState: (() => {
+          const bossAiConfig = aiConfigs.find(c => c.entity_type === 'boss' && c.entity_id === boss.id)
+          return { tier: bossAiConfig?.ai_tier ?? 'smart', energy: 0, maxEnergy: boss.max_energy, activePhaseOrder: 0, triggeredPhases: [], nextActionId: null }
+        })(),
         statMults: null,
       }
       setStunnedEnemyIds([])
-      setBurnStates([])
+      
       initCombat(playerHP, playerStamina, playerMana, [bossState])
       setPhase('boss')
     } else {
       const count = rollEnemyCount(run.currentRoom + 1, dungeon.rank, run.depth)
-      const roomEnemies = buildEnemyCombatStates(enemies, count, depthMult, dungeon.spawn_table, run.currentRoom + 1)
+      console.log(`[BETWEEN] sala=${run.currentRoom + 1} aiConfigs=${aiConfigs?.length ?? 0} enemies=${enemies.length} detalle=${JSON.stringify(aiConfigs?.map(c => ({ eid: c.entity_id, tier: c.ai_tier })))}`)
+      const roomEnemies = buildEnemyCombatStates(enemies, count, depthMult, dungeon.spawn_table, run.currentRoom + 1, aiConfigs)
       setCurrentEnemy(roomEnemies[0].enemy)
       setStunnedEnemyIds([])
-      setBurnStates([])
+      
       initCombat(playerHP, playerStamina, playerMana, roomEnemies)
       setPhase('in_combat')
     }
   }
 
   const [lastEventMsg, setLastEventMsg] = useState<string | null>(null)
+  const [merchantGoldFlushed, setMerchantGoldFlushed] = useState(false)
+
+  // Flush del gold del run una sola vez al abrir el mercader
+  useEffect(() => {
+    if (run.currentEvent?.type !== 'merchant' || merchantGoldFlushed) return
+    const runGold = run.accumulatedLoot.gold
+    if (runGold <= 0) { setMerchantGoldFlushed(true); return }
+    flushRunGoldAction(runGold).then(result => {
+      if (result.success) {
+        addLoot({ gold: -runGold })
+        setMerchantGoldFlushed(true)
+      }
+    })
+  }, [run.currentEvent?.type])
 
   async function handleEventResolve(effect: EventEffect) {
     // Solo marcar como resuelto si no es una compra al mercader (el mercader se puede usar varias veces)
@@ -127,12 +147,10 @@ export function BetweenRoomsScreen({
     }
     if (effect.goldCost && effect.itemBought) {
       buyMerchantItemAction(effect.itemBought, effect.goldCost).then(result => {
-        if (result.success) {
-          setLastEventMsg(`🛒 Compraste un item por ${effect.goldCost} gold`)
-        }
+        if (!result.success) setLastEventMsg(`❌ Error al comprar: ${result.error}`)
       })
     }
-    if (effect.poison) setPoisonState(effect.poison)
+    if (effect.poison) applyPoisonEffect(effect.poison.damagePerTurn, effect.poison.turnsLeft)
     if (effect.mimicGold) {
       // Guardar el gold para agregarlo cuando el mimico muera
       setMimicPendingGold(effect.mimicGold)
@@ -203,7 +221,7 @@ export function BetweenRoomsScreen({
           maxHP={derived.max_hp}
           maxStamina={derived.max_stamina}
           maxMana={derived.max_mana}
-          poisonState={run.poisonState}
+          statusEffects={run.statusEffects}
         />
 
         {/* Loot acumulado */}
@@ -249,7 +267,7 @@ export function BetweenRoomsScreen({
             event={run.currentEvent}
             playerHP={playerHP}
             maxHP={derived.max_hp}
-            playerGold={run.accumulatedLoot.gold}
+            playerGold={player.gold + run.accumulatedLoot.gold}
             enemies={enemies}
             dungeon={dungeon}
             depthMult={depthMult}

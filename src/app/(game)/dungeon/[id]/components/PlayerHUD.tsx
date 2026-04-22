@@ -1,6 +1,6 @@
 'use client'
 
-import { PlayerPoisonState } from '@/types/game'
+import { StatusEffect } from '@/lib/game/statusEffects'
 
 interface PlayerHUDProps {
   name: string
@@ -10,16 +10,17 @@ interface PlayerHUDProps {
   maxHP: number
   maxStamina: number
   maxMana: number
-  poisonState?: PlayerPoisonState | null
+  statusEffects?: StatusEffect[]
   isBeingHit?: boolean
 }
 
 export function PlayerHUD({
   name, playerHP, playerStamina, playerMana,
-  maxHP, maxStamina, maxMana, poisonState,
+  maxHP, maxStamina, maxMana, statusEffects = [],
   isBeingHit = false,
 }: PlayerHUDProps) {
   const hpPct = Math.max(0, Math.round((playerHP / maxHP) * 100))
+  const poison = statusEffects.find(e => e.type === 'poison')
 
   return (
     <div className={`bg-gray-800 rounded-lg p-4 transition-all duration-150 ${isBeingHit ? 'ring-2 ring-red-500 bg-red-950/30' : ''}`}>
@@ -38,8 +39,8 @@ export function PlayerHUD({
       <div className="flex gap-4 text-sm">
         <span className="text-yellow-400">⚡ {playerStamina}/{maxStamina}</span>
         <span className="text-blue-400">🔮 {playerMana}/{maxMana}</span>
-        {poisonState && poisonState.turnsLeft > 0 && (
-          <span className="text-purple-400">☠️ Veneno ({poisonState.turnsLeft}t)</span>
+        {poison && poison.turnsLeft > 0 && (
+          <span className="text-purple-400">☠️ Veneno ({poison.turnsLeft}t)</span>
         )}
       </div>
     </div>
