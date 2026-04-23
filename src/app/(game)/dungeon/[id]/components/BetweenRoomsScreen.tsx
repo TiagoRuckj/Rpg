@@ -32,15 +32,16 @@ interface BetweenRoomsScreenProps {
   setCurrentEnemy: (enemy: Enemy | null) => void
   initCombat: (hp: number, stamina: number, mana: number, enemies: EnemyCombatState[]) => void
   setStunnedEnemyIds: (ids: number[]) => void
+  setBossInstanceId: (instanceId: number | null) => void
   
   addLoot: (loot: { gold?: number }) => void
   advanceRoom: () => void
   setCurrentEvent: (event: any) => void
   applyPoisonEffect: (damagePerTurn?: number, turnsLeft?: number) => void
   setFightingEvent: (v: boolean) => void
-  setMimicPendingGold: (gold: number) => void
-  granGoblinBoss: Boss | null
-  setGranGoblinBoss: (boss: Boss | null) => void
+  setEventPendingGold: (gold: number) => void
+  activeEventBoss: Boss | null
+  setActiveEventBoss: (boss: Boss | null) => void
   nextInstanceId: () => number
   buildEnemyCombatStates: (pool: Enemy[], count: number, depthMult: number, spawnTable?: any, room?: number, aiConfigs?: EnemyAiConfig[]) => EnemyCombatState[]
   aiConfigs: EnemyAiConfig[]
@@ -61,9 +62,9 @@ export function BetweenRoomsScreen({
   playerHP, playerStamina, playerMana,
   run, derived, itemInfoMap, lastLoot, isSaving,
   setPlayerHP, setPhase, setCurrentEnemy,
-  initCombat, setStunnedEnemyIds,
+  initCombat, setStunnedEnemyIds, setBossInstanceId,
   addLoot, advanceRoom, setCurrentEvent, applyPoisonEffect,
-  setFightingEvent, setMimicPendingGold, granGoblinBoss, setGranGoblinBoss,
+  setFightingEvent, setEventPendingGold, activeEventBoss, setActiveEventBoss,
   nextInstanceId, buildEnemyCombatStates, aiConfigs,
   onOpenRestConsumables, onUseRestItem, onExitDungeon,
   showRestConsumables, setShowRestConsumables,
@@ -98,7 +99,7 @@ export function BetweenRoomsScreen({
         statMults: null,
       }
       setStunnedEnemyIds([])
-      
+      setBossInstanceId(bossState.instanceId)
       initCombat(playerHP, playerStamina, playerMana, [bossState])
       setPhase('boss')
     } else {
@@ -151,9 +152,9 @@ export function BetweenRoomsScreen({
       })
     }
     if (effect.poison) applyPoisonEffect(effect.poison.damagePerTurn, effect.poison.turnsLeft)
-    if (effect.mimicGold) {
+    if (effect.chestTrapGold) {
       // Guardar el gold para agregarlo cuando el mimico muera
-      setMimicPendingGold(effect.mimicGold)
+      setEventPendingGold(effect.chestTrapGold)
     }
     if (effect.startCombat && effect.combatEnemies) {
       setFightingEvent(true)
@@ -271,9 +272,10 @@ export function BetweenRoomsScreen({
             enemies={enemies}
             dungeon={dungeon}
             depthMult={depthMult}
-            granGoblinBoss={granGoblinBoss}
-            onSetGranGoblinBoss={setGranGoblinBoss}
+            activeEventBoss={activeEventBoss}
+            onSetGranGoblinBoss={setActiveEventBoss}
             onResolve={handleEventResolve}
+            aiConfigs={aiConfigs}
           />
         )}
 

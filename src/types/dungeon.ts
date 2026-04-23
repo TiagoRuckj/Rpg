@@ -35,23 +35,23 @@ export interface RoomEvent {
 }
 
 export const EVENT_WEIGHTS: { type: RoomEventType; weight: number }[] = [
-  { type: 'treasure',      weight: 30 },
-  { type: 'ambush',        weight: 25 },
-  { type: 'healing_altar', weight: 20 },
-  { type: 'poison_trap',   weight: 15 },
-  { type: 'merchant',      weight: 8  },
-  { type: 'cracked_wall',  weight: 2  },
+  { type: 'treasure',      weight: 0  },
+  { type: 'ambush',        weight: 0  },
+  { type: 'healing_altar', weight: 0  },
+  { type: 'poison_trap',   weight: 0  },
+  { type: 'merchant',      weight: 0  },
+  { type: 'cracked_wall',  weight: 1  },
 ]
 
 export function rollRoomEvent(): RoomEvent | null {
-  if (Math.random() > 0.25) return null
+  // TESTEO: siempre genera evento
   const total = EVENT_WEIGHTS.reduce((s, e) => s + e.weight, 0)
   let r = Math.random() * total
   for (const e of EVENT_WEIGHTS) {
     r -= e.weight
     if (r <= 0) return { type: e.type, resolved: false }
   }
-  return { type: 'treasure', resolved: false }
+  return { type: 'cracked_wall', resolved: false }
 }
 
 // ─── Run State ────────────────────────────────────────────────────────────────
@@ -76,6 +76,7 @@ export interface RunState {
   depth: number
   currentEvent: RoomEvent | null
   statusEffects: StatusEffect[]
+  bossInstanceId: number | null  // instanceId del boss activo en combate
 }
 
 // ─── Fórmulas de dungeon ──────────────────────────────────────────────────────

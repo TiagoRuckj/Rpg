@@ -10,7 +10,7 @@ import {
 } from '@/types/game'
 import {
   StatusEffect, StatTarget, processStatusEffects,
-  applyBurn, applyPoison, applyEnemyBuff, applyPlayerDebuff,
+  applyBurn, applyPoison, applyEnemyPoison, applyEnemyBuff, applyPlayerDebuff,
   getPlayerStatMult, getEnemyStatMult,
 } from '@/lib/game/statusEffects'
 import {
@@ -190,6 +190,7 @@ export interface PlayerTurnInput {
   isBlocking: boolean
   statusEffects: StatusEffect[]
   bossId?: number
+  bossEnemyInstanceId?: number
   turn: number
 }
 
@@ -210,6 +211,7 @@ export interface PlayerTurnResult {
   phaseTriggered: boolean
   summonEnemyIds: number[]
   updatedAiStates: Record<number, EnemyAiState>
+  splashDamage: Record<number, number>
   log: string[]
 }
 
@@ -221,7 +223,7 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
     success: false, error, playerMaxHP: 0, damageDealt: 0, isCritical: false, isOvercrit: false,
     updatedEnemyHPs: {}, defeatedEnemyInstanceIds: [],
     newPlayerHP: input.currentPlayerHP, newPlayerStamina: input.currentPlayerStamina, newPlayerMana: input.currentPlayerMana,
-    newStatusEffects: input.statusEffects, newStunnedEnemyIds: [], phaseTriggered: false, summonEnemyIds: [], updatedAiStates: {}, log,
+    newStatusEffects: input.statusEffects, newStunnedEnemyIds: [], phaseTriggered: false, summonEnemyIds: [], updatedAiStates: {}, splashDamage: {}, log,
   })
 
   if (!user) return fail('No autorizado')
@@ -284,15 +286,17 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
   if (input.action === 'skill' && input.skillUsed) {
     const ismagical = input.skillUsed.type === 'magical'
     const staffBonus = ismagical ? staffAttackBonus * 2 : 0
-    const { damageResult, newEnemyHP } = resolvePlayerAttack(
-      playerStats, primaryStats, targetStats, target.currentHP,
-      gear, true, input.skillUsed.damage_multiplier, input.skillUsed.type,
-      classBonuses, target.enemyTypes,
-      { ignores_weapon: input.skillUsed.ignores_weapon, ignores_defense: input.skillUsed.ignores_defense, ignores_class_bonus: input.skillUsed.ignores_class_bonus },
-      staffBonus
-    )
-    playerDamageResult = damageResult
-    newTargetHP = newEnemyHP
+    if ((input.skillUsed.damage_multiplier ?? 0) > 0) {
+      const { damageResult, newEnemyHP } = resolvePlayerAttack(
+        playerStats, primaryStats, targetStats, target.currentHP,
+        gear, true, input.skillUsed.damage_multiplier, input.skillUsed.type,
+        classBonuses, target.enemyTypes,
+        { ignores_weapon: input.skillUsed.ignores_weapon, ignores_defense: input.skillUsed.ignores_defense, ignores_class_bonus: input.skillUsed.ignores_class_bonus },
+        staffBonus
+      )
+      playerDamageResult = damageResult
+      newTargetHP = newEnemyHP
+    }
     newPlayerStamina = input.currentPlayerStamina - input.skillUsed.stamina_cost
     newPlayerMana    = input.currentPlayerMana    - input.skillUsed.mana_cost
   }
@@ -314,7 +318,11 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
   if (input.action === 'attack' || input.action === 'skill') {
     const critText = playerDamageResult.isOvercrit ? ' ⚡⚡ OVERCRIT!' : playerDamageResult.isCritical ? ' ⚡ CRÍTICO!' : ''
     if (input.action === 'skill' && input.skillUsed) {
-      log.push(`✨ ${name} usa ${input.skillUsed.name} en ${target.name} por ${playerDamageResult.damage} de daño!${critText}`)
+      if (playerDamageResult.damage > 0) {
+        log.push(`✨ ${name} usa ${input.skillUsed.name} en ${target.name} por ${playerDamageResult.damage} de daño!${critText}`)
+      } else {
+        log.push(`✨ ${name} usa ${input.skillUsed.name}!`)
+      }
     } else {
       log.push(`⚔️ ${name} ataca a ${target.name} por ${playerDamageResult.damage} de daño!${critText}`)
     }
@@ -328,6 +336,20 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
 
   // Passives de arma
   const newStunnedFromPassive: number[] = []
+  let splashDamage: Record<number, number> = {}
+
+  // Splash de skill — si la skill tiene splash_multiplier, aplica % del daño a adyacentes
+  if (input.action === 'skill' && input.skillUsed?.splash_multiplier && playerDamageResult.damage > 0) {
+    const adjacentEnemies = liveEnemies.filter(e => e.instanceId !== target.instanceId)
+    const splashBase = Math.round(playerDamageResult.damage * input.skillUsed.splash_multiplier)
+    for (const adj of adjacentEnemies) {
+      const dmg = Math.max(1, splashBase)
+      updatedEnemyHPs[adj.instanceId] = Math.max(0, (updatedEnemyHPs[adj.instanceId] ?? adj.currentHP) - dmg)
+      splashDamage[adj.instanceId] = dmg
+      log.push(`💥 Daño en área a ${adj.name} por ${dmg}!`)
+    }
+  }
+
   if ((input.action === 'attack' || input.action === 'skill') && weaponType !== 'none') {
     const adjacentEnemies = liveEnemies
       .filter(e => e.instanceId !== target.instanceId)
@@ -342,6 +364,8 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
     const passiveResult = applyWeaponPassiveResults({ passive, target, liveEnemies, updatedEnemyHPs, defeatedEnemyInstanceIds: [], stunnedEnemyIds: [] })
     Object.assign(updatedEnemyHPs, passiveResult.updatedEnemyHPs)
     newStunnedFromPassive.push(...passiveResult.newStunnedEnemyIds)
+    // Mergear splash del passive con el del skill (no pisar)
+    Object.assign(splashDamage, passive.splashDamage)
   }
 
   // Burn — crítico garantiza quemadura, si no usa burn_chance normal
@@ -360,6 +384,16 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
     }
   }
 
+  // Poison all — aplica veneno a todos los enemigos vivos
+  if (input.action === 'skill' && input.skillUsed?.poison_all) {
+    for (const e of liveEnemies) {
+      if (updatedEnemyHPs[e.instanceId] > 0) {
+        newStatusEffects = applyEnemyPoison(e.instanceId, newStatusEffects)
+        log.push(`☠️ ${e.name} fue envenenado!`)
+      }
+    }
+  }
+
   const defeatedEnemyInstanceIds: number[] = []
   for (const e of liveEnemies) {
     if (updatedEnemyHPs[e.instanceId] <= 0 && !defeatedEnemyInstanceIds.includes(e.instanceId)) {
@@ -370,7 +404,9 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
   // ── Cap de HP al umbral de fase (sin activar la fase) ───────────────────────
   // La fase se activa en endTurnAction — acá solo limitamos el HP visible
   if (input.bossId && bossPhases.length > 0) {
-    const bossEnemy = input.enemies.find(e => e.alive)
+    const bossEnemy = input.bossEnemyInstanceId !== undefined
+      ? input.enemies.find(e => e.instanceId === input.bossEnemyInstanceId)
+      : input.enemies.find(e => e.alive)
     if (bossEnemy) {
       const currentHP = updatedEnemyHPs[bossEnemy.instanceId]
       const triggeredPhases = bossEnemy.aiState.triggeredPhases
@@ -401,6 +437,7 @@ export async function playerTurnAction(input: PlayerTurnInput): Promise<PlayerTu
     phaseTriggered: false,
     summonEnemyIds: [],
     updatedAiStates: {},
+    splashDamage,
     log,
   }
 }
@@ -521,7 +558,7 @@ export async function enemyTurnAction(input: EnemyTurnInput): Promise<EnemyTurnR
     const entityType = isBossEntity ? 'boss' : 'enemy'
     const aiConfig = aiConfigs.find(c =>
       c.entity_type === entityType &&
-      (isBossEntity || c.entity_id === enemy.enemyId)
+      (isBossEntity ? c.entity_id === input.bossId : c.entity_id === enemy.enemyId)
     )
     const availableActions = aiConfig ? (actionsByConfigId[aiConfig.id] ?? []) : []
     const isBoss = input.bossId !== undefined && aiConfig?.entity_type === 'boss'

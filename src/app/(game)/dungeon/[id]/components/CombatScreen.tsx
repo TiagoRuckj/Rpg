@@ -46,6 +46,7 @@ interface CombatScreenProps {
   onAction: (action: CombatAction, skill?: PlayerSkill, itemUsed?: ItemUsed) => void
   onSetTargetIndex: (idx: number) => void
   onSetShowSkills: (v: boolean) => void
+  onSetShowItems: (v: boolean) => void
   onOpenItems: () => void
   onUseItem: (entryId: number) => void
   onExitDungeon: () => void
@@ -248,7 +249,7 @@ export function CombatScreen({
   consecutiveBlocks,
   availableSkills, showSkills, showItems, consumables, loadingItems,
   enemyAnimStates, playerAnimState, floatingDamages, combatPhase,
-  onAction, onSetTargetIndex, onSetShowSkills, onOpenItems, onUseItem,
+  onAction, onSetTargetIndex, onSetShowSkills, onSetShowItems, onOpenItems, onUseItem,
   onExitDungeon, onReturnToHub,
 }: CombatScreenProps) {
   const logRef = useRef<HTMLDivElement>(null)
@@ -290,7 +291,7 @@ export function CombatScreen({
         : null
 
   return (
-    <div className="min-h-screen flex" style={{
+    <div className="min-h-screen flex items-center justify-center" style={{
       backgroundImage: `url(/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'})`,
       backgroundSize: 'cover', backgroundPosition: 'center',
     }}>
@@ -330,7 +331,7 @@ export function CombatScreen({
       </div>
 
       {/* Zona central */}
-      <div className="w-full max-w-xl min-h-screen text-white p-4 flex flex-col gap-4" style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}>
+      <div className="w-full max-w-xl text-white p-4 flex flex-col gap-4 rounded-2xl my-4" style={{ backgroundColor: 'rgba(0,0,0,0.75)' }}>
 
         {/* Header */}
         <div className="flex justify-between items-center">
@@ -389,70 +390,76 @@ export function CombatScreen({
           maxHP={derived.max_hp}
           maxStamina={derived.max_stamina}
           maxMana={derived.max_mana}
-          statusEffects={run.statusEffects}
+          statusEffects={run.statusEffects.filter(ef => ef.target === 'player')}
           isBeingHit={playerAnimState === 'hit'}
         />
 
-        {/* Skills */}
+        {/* Skills — menú flotante */}
         {showSkills && status === 'active' && (
-          <div className="bg-gray-800 rounded-lg p-4 flex flex-col gap-2">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="font-bold text-purple-400">✨ Habilidades</h3>
-              <button onClick={() => onSetShowSkills(false)} className="text-gray-400 hover:text-white text-sm">✕ Cerrar</button>
-            </div>
-            {availableSkills.map((skill) => {
-              const canUse = playerStamina >= skill.stamina_cost && playerMana >= skill.mana_cost
-              return (
-                <button
-                  key={skill.id}
-                  onClick={() => onAction('skill', skill)}
-                  disabled={!canUse || isProcessing}
-                  className="text-left bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg p-3 transition"
-                >
-                  <div className="flex justify-between items-start">
-                    <span className="font-bold text-white">{skill.name}</span>
-                    <div className="flex gap-2 text-xs">
-                      {skill.stamina_cost > 0 && <span className="text-yellow-400">⚡{skill.stamina_cost}</span>}
-                      {skill.mana_cost > 0 && <span className="text-blue-400">🔮{skill.mana_cost}</span>}
+          <div className="fixed inset-0 z-50 flex items-end justify-center pb-4 px-4" onClick={() => onSetShowSkills(false)}>
+            <div className="absolute inset-0 bg-black/50" />
+            <div className="relative w-full max-w-xl bg-gray-900 border border-purple-700 rounded-2xl p-4 flex flex-col gap-2 max-h-[60vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="font-bold text-purple-400">✨ Habilidades</h3>
+                <button onClick={() => onSetShowSkills(false)} className="text-gray-400 hover:text-white text-sm">✕</button>
+              </div>
+              {availableSkills.map((skill) => {
+                const canUse = playerStamina >= skill.stamina_cost && playerMana >= skill.mana_cost
+                return (
+                  <button
+                    key={skill.id}
+                    onClick={() => onAction('skill', skill)}
+                    disabled={!canUse || isProcessing}
+                    className="text-left bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg p-3 transition"
+                  >
+                    <div className="flex justify-between items-start">
+                      <span className="font-bold text-white">{skill.name}</span>
+                      <div className="flex gap-2 text-xs">
+                        {skill.stamina_cost > 0 && <span className="text-yellow-400">⚡{skill.stamina_cost}</span>}
+                        {skill.mana_cost > 0 && <span className="text-blue-400">🔮{skill.mana_cost}</span>}
+                      </div>
                     </div>
-                  </div>
-                  <p className="text-gray-400 text-sm mt-1">{skill.description}</p>
-                  <p className="text-purple-400 text-xs mt-1">Daño: x{skill.damage_multiplier} • {skill.type}</p>
-                </button>
-              )
-            })}
+                    <p className="text-gray-400 text-sm mt-1">{skill.description}</p>
+                    <p className="text-purple-400 text-xs mt-1">Daño: x{skill.damage_multiplier} • {skill.type}</p>
+                  </button>
+                )
+              })}
+            </div>
           </div>
         )}
 
-        {/* Items */}
+        {/* Items — menú flotante */}
         {showItems && status === 'active' && (
-          <div className="bg-gray-800 rounded-lg p-4 flex flex-col gap-2">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="font-bold text-green-400">🎒 Consumibles</h3>
-              <button onClick={() => onAction('attack')} className="text-gray-400 hover:text-white text-sm">✕ Cerrar</button>
-            </div>
-            {loadingItems && <p className="text-gray-400 text-sm text-center py-2">Cargando...</p>}
-            {!loadingItems && consumables.length === 0 && <p className="text-gray-500 text-sm text-center py-2">No tenés consumibles</p>}
-            {!loadingItems && consumables.map((entry) => (
-              <button
-                key={entry.id}
-                onClick={() => onUseItem(entry.id)}
-                disabled={isProcessing}
-                className="text-left bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg p-3 transition"
-              >
-                <div className="flex justify-between items-center">
-                  <div>
-                    <span className="font-bold text-white">{entry.item.name}</span>
-                    <div className="flex gap-3 text-xs mt-1">
-                      {entry.item.effect?.heal_hp      > 0 && <span className="text-red-400">❤️ +{entry.item.effect.heal_hp} HP</span>}
-                      {entry.item.effect?.heal_stamina > 0 && <span className="text-yellow-400">⚡ +{entry.item.effect.heal_stamina}</span>}
-                      {entry.item.effect?.heal_mana    > 0 && <span className="text-blue-400">🔮 +{entry.item.effect.heal_mana}</span>}
+          <div className="fixed inset-0 z-50 flex items-end justify-center pb-4 px-4" onClick={() => onSetShowItems(false)}>
+            <div className="absolute inset-0 bg-black/50" />
+            <div className="relative w-full max-w-xl bg-gray-900 border border-green-700 rounded-2xl p-4 flex flex-col gap-2 max-h-[60vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="font-bold text-green-400">🎒 Consumibles</h3>
+                <button onClick={() => onSetShowItems(false)} className="text-gray-400 hover:text-white text-sm">✕</button>
+              </div>
+              {loadingItems && <p className="text-gray-400 text-sm text-center py-2">Cargando...</p>}
+              {!loadingItems && consumables.length === 0 && <p className="text-gray-500 text-sm text-center py-2">No tenés consumibles</p>}
+              {!loadingItems && consumables.map((entry) => (
+                <button
+                  key={entry.id}
+                  onClick={() => onUseItem(entry.id)}
+                  disabled={isProcessing}
+                  className="text-left bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg p-3 transition"
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <span className="font-bold text-white">{entry.item.name}</span>
+                      <div className="flex gap-3 text-xs mt-1">
+                        {entry.item.effect?.heal_hp      > 0 && <span className="text-red-400">❤️ +{entry.item.effect.heal_hp} HP</span>}
+                        {entry.item.effect?.heal_stamina > 0 && <span className="text-yellow-400">⚡ +{entry.item.effect.heal_stamina}</span>}
+                        {entry.item.effect?.heal_mana    > 0 && <span className="text-blue-400">🔮 +{entry.item.effect.heal_mana}</span>}
+                      </div>
                     </div>
+                    <span className="text-gray-400 text-sm">x{entry.quantity}</span>
                   </div>
-                  <span className="text-gray-400 text-sm">x{entry.quantity}</span>
-                </div>
-              </button>
-            ))}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -464,7 +471,7 @@ export function CombatScreen({
         )}
 
         {/* Botones de acción — deshabilitados durante animaciones */}
-        {status === 'active' && !showSkills && !showItems && (
+        {status === 'active' && (
           <div className="grid grid-cols-2 gap-3">
             <ActionButton label="⚔️ Atacar"     onClick={() => onAction('attack')}    disabled={isProcessing || combatPhase !== 'idle'} color="bg-red-600 hover:bg-red-500" />
             <ActionButton label="✨ Habilidades" onClick={() => onSetShowSkills(true)}  disabled={isProcessing || combatPhase !== 'idle'} color="bg-purple-600 hover:bg-purple-500" />

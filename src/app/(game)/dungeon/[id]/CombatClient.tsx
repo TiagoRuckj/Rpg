@@ -34,22 +34,25 @@ interface Props {
   boss: Boss
   enemies: Enemy[]
   aiConfigs: EnemyAiConfig[]
+  eventBosses: Boss[]
 }
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 
-export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs }: Props) {
+export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs, eventBosses }: Props) {
   const router = useRouter()
   const logRef = useRef<HTMLDivElement>(null)
 
   const [isProcessing, setIsProcessing] = useState(false)
   const [showSkills, setShowSkills] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
-  const [granGoblinBoss, setGranGoblinBoss] = useState<Boss | null>(null)
+  const [activeEventBoss, setActiveEventBoss] = useState<Boss | null>(
+    eventBosses.find(b => b.name === 'Gran Goblin') ?? null
+  )
   const [fightingEvent, setFightingEvent] = useState(false)
   const aiDebugAccRef = useRef<AiDebugEntry[]>([])
   const [aiDebugTick, setAiDebugTick] = useState(0)
-  const [mimicPendingGold, setMimicPendingGold] = useState(0)
+  const [eventPendingGold, setEventPendingGold] = useState(0)
   const [lastLoot, setLastLoot] = useState<{ exp: number; gold: number; itemId: number | null; itemName: string | null } | null>(null)
   const [bossDrops, setBossDrops] = useState<{ name: string; sprite: string }[]>([])
 
@@ -99,7 +102,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     initCombat, setPlayerHP, setEnemyHP,
     setPlayerStamina, setPlayerMana, addLog, nextTurn, setStatus,
     initRun, setPhase, setCurrentEnemy, addLoot, advanceRoom,
-    setBossDefeated, increaseDepth,
+    setBossDefeated, setBossInstanceId, increaseDepth,
     setCurrentEvent,
     consecutiveBlocks, setConsecutiveBlocks,
     stunnedEnemyIds, setStunnedEnemyIds,
@@ -176,6 +179,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       }
     }
 
+    setBossInstanceId(bossState.instanceId)
     initCombat(playerHP, playerStamina, playerMana, combatEnemies)
   }, [run.phase, run.currentEnemies.length, status])
 
@@ -191,7 +195,9 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
   })()
 
   const targetEnemy = run.currentEnemies[safeTargetIndex]
-  const bossEnemyState = isBossRoom ? run.currentEnemies[0] : null
+  const bossEnemyState = isBossRoom
+    ? run.currentEnemies.find(e => e.instanceId === run.bossInstanceId) ?? null
+    : null
 
   const itemInfoMap = new Map<number, { name: string; sprite: string }>()
   for (const enemy of enemies) {
@@ -203,6 +209,12 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
   for (const entry of (boss as any)?.loot_table ?? []) {
     if (entry.item_id && entry.item_name)
       itemInfoMap.set(entry.item_id, { name: entry.item_name, sprite: (entry as any).item_sprite ?? '' })
+  }
+  for (const eb of eventBosses) {
+    for (const entry of (eb.loot_table as any[]) ?? []) {
+      if (entry.item_id && entry.item_name)
+        itemInfoMap.set(entry.item_id, { name: entry.item_name, sprite: entry.item_sprite ?? '' })
+    }
   }
 
   // ─── Combate ──────────────────────────────────────────────────────────────
@@ -268,6 +280,13 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       spawnFloat(targetState.instanceId, ptResult.damageDealt, ptResult.isCritical || ptResult.isOvercrit, false)
     }
 
+    // 2b. Animación splash (espada) en adyacentes
+    for (const [idStr, dmg] of Object.entries(ptResult.splashDamage)) {
+      const id = Number(idStr)
+      triggerEnemyAnim(id, 'hit', hitDuration)
+      spawnFloat(id, dmg, false, false)
+    }
+
     // 3. Después de la animación hit → animación dead → marcar alive:false
     for (const id of ptResult.defeatedEnemyInstanceIds) {
       const fallen = run.currentEnemies.find(e => e.instanceId === id)
@@ -322,8 +341,24 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     if (allDefeatedByPlayer) {
       // Esperar que la animación de muerte termine
       await new Promise(r => setTimeout(r, hitDuration + 800))
+      applyEnemyUpdates(ptResult.updatedEnemyHPs, ptResult.updatedAiStates, [], run.currentEnemies, ptResult.defeatedEnemyInstanceIds)
       nextTurn()
       setCombatPhase('idle')
+
+      // Si es un evento de Gran Goblin
+      if (fightingEvent && activeEventBoss) {
+        setFightingEvent(false); setActiveEventBoss(null); setCurrentEvent(null)
+      }
+      // Si es un evento de mímico, agregar el gold del cofre
+      else if (fightingEvent && !activeEventBoss && eventPendingGold > 0) {
+        addLoot({ gold: eventPendingGold })
+        addLog(`💰 ¡Encontraste ${eventPendingGold} gold en el cofre del Mímico!`)
+        totalGold += eventPendingGold
+        setFightingEvent(false); setCurrentEvent(null); setEventPendingGold(0)
+      } else if (fightingEvent && !activeEventBoss) {
+        setFightingEvent(false); setCurrentEvent(null)
+      }
+
       setStatus('victory')
       setEnemyAnimStates({})
       setVictoryModal({ type: 'room', exp: totalExp, gold: totalGold, items: modalItems })
@@ -421,13 +456,29 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       })
     }
 
-    // Shake por daño de efectos
+    // Shake y número flotante por daño de efectos
     for (const e of enemiesForEffects) {
       const prevHP = e.currentHP
       const newHP  = efResult.updatedEnemyHPs[e.instanceId] ?? prevHP
       if (newHP < prevHP && !efResult.defeatedByEffects.includes(e.instanceId)) {
         triggerEnemyAnim(e.instanceId, 'hit', 300)
+        spawnFloat(e.instanceId, prevHP - newHP, false, false)
       }
+    }
+
+    // Animación de muerte y loot para enemigos eliminados por efectos
+    let effectKillExp = 0, effectKillGold = 0
+    const effectKillItems: { itemId: number; itemName: string; sprite?: string }[] = []
+    for (const id of efResult.defeatedByEffects) {
+      const fallen = run.currentEnemies.find(e => e.instanceId === id)
+      if (fallen) {
+        const loot = resolveEnemyLoot(fallen.enemy, depthMult)
+        addLoot({ exp: loot.exp, gold: loot.gold, items: loot.itemId ? [loot.itemId] : [] })
+        effectKillExp  += loot.exp
+        effectKillGold += loot.gold
+        if (loot.itemId && loot.itemName) effectKillItems.push({ itemId: loot.itemId, itemName: loot.itemName })
+      }
+      triggerEnemyAnim(id, 'dead')
     }
 
     setPlayerHP(efResult.newPlayerHP)
@@ -440,6 +491,27 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     if (etResult.playerDefeated || efResult.playerDefeated) {
       setStatus('defeat')
       saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1 })
+      return
+    }
+
+    // Victoria si todos murieron por efectos
+    const allDefeatedByEffects = enemiesForEffects
+      .every(e => efResult.defeatedByEffects.includes(e.instanceId) || (efResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) <= 0)
+    if (allDefeatedByEffects) {
+      await new Promise(r => setTimeout(r, 800))
+      // Si es mímico, agregar gold del cofre
+      if (fightingEvent && !activeEventBoss && eventPendingGold > 0) {
+        addLoot({ gold: eventPendingGold })
+        addLog(`💰 ¡Encontraste ${eventPendingGold} gold en el cofre del Mímico!`)
+        effectKillGold += eventPendingGold
+        setFightingEvent(false); setCurrentEvent(null); setEventPendingGold(0)
+      } else if (fightingEvent && !activeEventBoss) {
+        setFightingEvent(false); setCurrentEvent(null)
+      }
+      setStatus('victory')
+      setEnemyAnimStates({})
+      setVictoryModal({ type: 'room', exp: effectKillExp, gold: effectKillGold, items: effectKillItems })
+      return
     }
   }
 
@@ -448,16 +520,18 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     if (!bossEnemyState) return []
     const scaledAtk = Math.round(boss.stats.attack  * (run.depth > 0 ? depthMult : 1))
     const scaledDef = Math.round(boss.stats.defense * (run.depth > 0 ? depthMult : 1))
-    return run.currentEnemies.map(e => {
-      const isBossEntity = e.instanceId === bossEnemyState.instanceId
-      return {
-        instanceId: e.instanceId, enemyId: e.enemy.id, currentHP: e.currentHP, maxHP: e.maxHP, alive: e.alive,
-        attack: isBossEntity ? scaledAtk : Math.round(e.enemy.stats.attack * depthMult),
-        defense: isBossEntity ? scaledDef : Math.round(e.enemy.stats.defense * depthMult),
-        name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
-        aiState: e.aiState,
-      }
-    })
+    return run.currentEnemies
+      .filter(e => e.alive && e.currentHP > 0)
+      .map(e => {
+        const isBossEntity = e.instanceId === bossEnemyState.instanceId
+        return {
+          instanceId: e.instanceId, enemyId: e.enemy.id, currentHP: e.currentHP, maxHP: e.maxHP, alive: e.alive,
+          attack: isBossEntity ? scaledAtk : Math.round(e.enemy.stats.attack * depthMult),
+          defense: isBossEntity ? scaledDef : Math.round(e.enemy.stats.defense * depthMult),
+          name: e.enemy.name, enemyTypes: e.enemy.enemy_type as EnemyType[],
+          aiState: e.aiState,
+        }
+      })
   }
 
   // ─── Helper: aplicar resultado de enemigos al store ───────────────────────
@@ -517,11 +591,11 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
   function resolveOutcome(allDefeated: boolean, playerDef: boolean, newHP: number) {
     if (allDefeated) {
       // Gran Goblin (evento especial)
-      if (fightingEvent && granGoblinBoss) {
-        const loot = resolveBossLoot(granGoblinBoss, 0, 0)
+      if (fightingEvent && activeEventBoss) {
+        const loot = resolveBossLoot(activeEventBoss, 0, 0)
         addLoot({ items: loot.items })
         addLog('🏆 ¡Derrotaste al Gran Goblin!')
-        setFightingEvent(false); setGranGoblinBoss(null); setCurrentEvent(null)
+        setFightingEvent(false); setActiveEventBoss(null); setCurrentEvent(null)
         setStatus('victory')
         const modalItems = loot.itemDetails.map((d, i) => ({ itemId: loot.items[i] ?? 0, itemName: d.name, sprite: d.sprite }))
         setVictoryModal({ type: 'room', exp: 0, gold: 0, items: modalItems })
@@ -529,15 +603,15 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       }
 
       // Mímico (evento especial — gold del cofre se suma al derrotarlo)
-      if (fightingEvent && !granGoblinBoss) {
-        if (mimicPendingGold > 0) {
-          addLoot({ gold: mimicPendingGold })
-          addLog(`💰 ¡Encontraste ${mimicPendingGold} gold en el cofre del Mímico!`)
+      if (fightingEvent && !activeEventBoss) {
+        if (eventPendingGold > 0) {
+          addLoot({ gold: eventPendingGold })
+          addLog(`💰 ¡Encontraste ${eventPendingGold} gold en el cofre del Mímico!`)
         }
         addLog('🏆 ¡Derrotaste al Mímico!')
-        setFightingEvent(false); setCurrentEvent(null); setMimicPendingGold(0)
+        setFightingEvent(false); setCurrentEvent(null); setEventPendingGold(0)
         setStatus('victory')
-        setVictoryModal({ type: 'room', exp: 0, gold: mimicPendingGold, items: [] })
+        setVictoryModal({ type: 'room', exp: 0, gold: eventPendingGold, items: [] })
         return true
       }
 
@@ -566,6 +640,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       const totalItems = [...run.accumulatedLoot.items, ...bossLoot.items]
       addLoot({ exp: bossLoot.exp, gold: bossLoot.gold, items: bossLoot.items })
       setBossDefeated(true)
+      setBossInstanceId(null)
       setStatus('victory')
       registerKillAction({ enemyTypes: boss.enemy_type ?? [], hasWeaponEquipped: true, isBossKill: true, dungeonId: dungeon.id })
       saveRunAction({ outcome: 'victory', exp: totalExp, gold: totalGold, items: totalItems, currentHP: newHP })
@@ -626,18 +701,22 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     // ── FASE 1: turno del jugador ──────────────────────────────────────────
     setCombatPhase('player_acting')
     const enemyStates = buildBossEnemyStates()
+    // Recalcular targetIndex sobre el array filtrado (sin muertos)
+    const targetInstanceId = run.currentEnemies[safeTargetIndex]?.instanceId
+    const filteredTargetIndex = Math.max(0, enemyStates.findIndex(e => e.instanceId === targetInstanceId))
     if (process.env.NODE_ENV === 'development') {
       const bossState = enemyStates.find(e => e.instanceId === bossEnemyState?.instanceId)
       console.log('[DEBUG boss aiState al inicio del turno]', bossState?.aiState)
+      console.log('[DEBUG enemyStates enviados al servidor]', enemyStates.map(e => ({ name: e.name, instanceId: e.instanceId, currentHP: e.currentHP })))
     }
 
     const ptResult = await playerTurnAction({
       action, skillUsed: skill, itemUsed,
       currentPlayerHP: playerHP, currentPlayerStamina: playerStamina, currentPlayerMana: playerMana,
-      enemies: enemyStates, targetIndex: safeTargetIndex,
+      enemies: enemyStates, targetIndex: filteredTargetIndex,
       isBlocking: action === 'block',
       statusEffects: run.statusEffects,
-      bossId: boss.id, turn,
+      bossId: boss.id, bossEnemyInstanceId: bossEnemyState?.instanceId, turn,
     })
 
     if (!ptResult.success) { addLog(ptResult.error ?? 'Error'); setCombatPhase('idle'); setIsProcessing(false); return }
@@ -660,6 +739,13 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     if (ptResult.damageDealt > 0) {
       triggerEnemyAnim(bossTargetId, ptResult.isCritical || ptResult.isOvercrit ? 'crit' : 'hit', hitDurationBoss)
       spawnFloat(bossTargetId, ptResult.damageDealt, ptResult.isCritical || ptResult.isOvercrit, false)
+    }
+
+    // Animación splash (espada) en adyacentes
+    for (const [idStr, dmg] of Object.entries(ptResult.splashDamage)) {
+      const id = Number(idStr)
+      triggerEnemyAnim(id, 'hit', hitDurationBoss)
+      spawnFloat(id, dmg, false, false)
     }
 
     // Actualizar HPs sin tocar alive (para que el sprite se vea durante la animación)
@@ -731,6 +817,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
 
     if (allDefeatedByPlayer) {
       await new Promise(r => setTimeout(r, 500))
+      applyEnemyUpdates(ptResult.updatedEnemyHPs, ptResult.updatedAiStates, [], enemiesAfterPlayer, clientDefeatedIds)
       nextTurn()
       setCombatPhase('idle')
       resolveOutcome(true, false, ptResult.newPlayerHP)
@@ -915,11 +1002,11 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
         lastLoot={lastLoot} isSaving={isSaving}
         setPlayerHP={setPlayerHP} setPlayerStamina={setPlayerStamina} setPlayerMana={setPlayerMana}
         setPhase={setPhase} setCurrentEnemy={setCurrentEnemy}
-        initCombat={initCombat} setStunnedEnemyIds={setStunnedEnemyIds}
+        initCombat={initCombat} setStunnedEnemyIds={setStunnedEnemyIds} setBossInstanceId={setBossInstanceId}
         addLoot={addLoot} advanceRoom={advanceRoom} setCurrentEvent={setCurrentEvent}
         applyPoisonEffect={applyPoisonEffect}
-        setFightingEvent={setFightingEvent} setMimicPendingGold={setMimicPendingGold}
-        granGoblinBoss={granGoblinBoss} setGranGoblinBoss={setGranGoblinBoss}
+        setFightingEvent={setFightingEvent} setEventPendingGold={setEventPendingGold}
+        activeEventBoss={activeEventBoss} setActiveEventBoss={setActiveEventBoss}
         nextInstanceId={nextInstanceId} buildEnemyCombatStates={buildEnemyCombatStates} aiConfigs={aiConfigs}
         onOpenRestConsumables={handleOpenRestConsumables}
         onUseRestItem={handleUseRestItem}
@@ -1000,6 +1087,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
         onAction={handleAction}
         onSetTargetIndex={setTargetIndex}
         onSetShowSkills={setShowSkills}
+        onSetShowItems={setShowItems}
         onOpenItems={handleOpenItems}
         onUseItem={handleUseItem}
         onExitDungeon={handleExitDungeon}

@@ -213,6 +213,7 @@ export function resolveWeaponPassive(
 
   switch (weaponType) {
     case 'sword': {
+      if (isSkill) break
       if (adjecentEnemies.length === 0) break
       const splashBase = Math.round(primaryDamage * 0.15)
       for (const adj of adjecentEnemies) {
@@ -416,3 +417,4 @@ export function calcHealCost(missingHP: number): number {
   if (missingHP <= 100) return 0
   return Math.ceil((missingHP - 100) * 2)
 }
+

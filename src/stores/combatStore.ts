@@ -49,6 +49,7 @@ interface CombatStore extends CombatState {
   addLoot: (loot: Partial<AccumulatedLoot>) => void
   advanceRoom: () => void
   setBossDefeated: (val: boolean) => void
+  setBossInstanceId: (instanceId: number | null) => void
   increaseDepth: () => void
 }
 
@@ -75,6 +76,7 @@ const initialRunState: RunState = {
   depth: 0,
   currentEvent: null,
   statusEffects: [],
+  bossInstanceId: null,
 }
 
 export const useCombatStore = create<CombatStore>((set) => ({
@@ -220,6 +222,10 @@ export const useCombatStore = create<CombatStore>((set) => ({
 
   setBossDefeated: (val) => set((state) => ({
     run: { ...state.run, bossDefeated: val },
+  })),
+
+  setBossInstanceId: (instanceId) => set((state) => ({
+    run: { ...state.run, bossInstanceId: instanceId },
   })),
 
   increaseDepth: () => set((state) => ({

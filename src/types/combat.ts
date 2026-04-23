@@ -27,4 +27,6 @@ export interface PlayerSkill {
   ignores_defense?: boolean
   ignores_class_bonus?: boolean
   burn_chance?: number
+  splash_multiplier?: number  // si está definido, aplica ese % del daño a todos los adyacentes
+  poison_all?: boolean        // si true, aplica veneno a todos los enemigos vivos
 }

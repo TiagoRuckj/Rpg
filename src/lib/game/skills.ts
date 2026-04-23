@@ -9,7 +9,7 @@ export const BASE_SKILLS: PlayerSkill[] = [
     stamina_cost: 15,
     mana_cost: 0,
     type: 'physical',
-    ignores_weapon: true,   // daño base sin contar el arma equipada
+    ignores_weapon: true,
   },
   {
     id: 'fireball',
@@ -21,6 +21,31 @@ export const BASE_SKILLS: PlayerSkill[] = [
     type: 'magical',
     ignores_defense: true,
     burn_chance: 0.10,
+  },
+  {
+    id: 'nube_toxica',
+    name: 'Nube Tóxica',
+    description: 'Envuelve a todos los enemigos en una nube venenosa.',
+    damage_multiplier: 0,
+    stamina_cost: 0,
+    mana_cost: 25,
+    type: 'magical',
+    ignores_weapon: true,
+    ignores_defense: true,
+    poison_all: true,
+  },
+  {
+    id: 'test_nuke',
+    name: '[TEST] Nuke',
+    description: 'Hace 1000 de daño ignorando todo. Solo para testeo.',
+    damage_multiplier: 999,
+    stamina_cost: 0,
+    mana_cost: 0,
+    type: 'physical',
+    ignores_weapon: true,
+    ignores_defense: true,
+    ignores_class_bonus: true,
+    splash_multiplier: 1.0,  // 100% del daño a adyacentes
   },
 ]
 

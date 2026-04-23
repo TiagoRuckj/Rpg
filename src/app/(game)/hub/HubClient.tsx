@@ -91,6 +91,19 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
         onBack={() => setView('hub')}
         onInventoryUpdate={(updatedInventory) => {
           setInventory(updatedInventory)
+          // Si el max HP bajó por desequipar gear, capear el HP actual
+          const updatedGear = getEquippedGear(updatedInventory)
+          const equippedClassData = unlockedClasses.filter(c =>
+            (currentPlayer.equipped_classes ?? []).includes(c.id)
+          ) as GameClass[]
+          const updatedClassBonuses = calcClassBonuses(currentPlayer.equipped_classes ?? [], equippedClassData)
+          const newMaxHP = deriveStatsWithGearAndClasses(currentPlayer.primary_stats, updatedGear, updatedClassBonuses).max_hp
+          const currentHPNow = (currentPlayer as any).current_hp ?? newMaxHP
+          if (currentHPNow > newMaxHP) {
+            const supabase = createClient()
+            supabase.from('players').update({ current_hp: newMaxHP }).eq('id', currentPlayer.id)
+            setCurrentPlayer(p => ({ ...p, current_hp: newMaxHP }))
+          }
         }}
       />
     )
@@ -318,7 +331,7 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
 
           {/* Grid 3 columnas — fila 2 */}
           <div className="grid grid-cols-3 gap-3">
-            <HubMenuCard icon="✨" title="Habilidades" sub={`${equippedSkills.length}/3 equipadas`} onClick={() => setView('skills')} />
+            <HubMenuCard icon="✨" title="Habilidades" sub={`${equippedSkills.length} equipadas`} onClick={() => setView('skills')} />
             <HubMenuCard icon="🏪" title="Tienda" sub={`${currentPlayer.gold} gold disponible`} onClick={() => setView('shop')} />
             <HubMenuCard icon="🔨" title="Herrero" sub="Mejorá tu equipo" onClick={() => setView('blacksmith')} />
           </div>

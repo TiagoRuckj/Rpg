@@ -98,7 +98,7 @@ export function VictoryModal({
                         <img
                           src={`/sprites/items/${item.sprite}`}
                           alt={item.itemName}
-                          className="w-10 h-10 object-contain"
+                          className="w-16 h-16 object-contain"
                           style={{ imageRendering: 'pixelated' }}
                           onError={(e) => {
                             (e.target as HTMLImageElement).style.display = 'none'

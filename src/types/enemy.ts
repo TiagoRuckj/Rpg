@@ -38,14 +38,6 @@ export interface BossStats {
   defense: number
 }
 
-export interface BossSkill {
-  name: string
-  damage: number
-  cost: number
-  type: 'physical' | 'magical'
-  telegraphed: boolean
-}
-
 export interface LootEntry {
   item_id: number
   chance: number
@@ -56,7 +48,6 @@ export interface Boss {
   dungeon_id: number
   name: string
   stats: BossStats
-  skills: BossSkill[]
   loot_table: LootEntry[]
   enemy_type: EnemyType[]
   max_energy: number

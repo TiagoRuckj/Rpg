@@ -65,8 +65,17 @@ export function resolveBossLoot(
 ): BossLootResult {
   const items: number[] = []
   const itemDetails: { id: number; name: string; sprite: string }[] = []
+  let totalExp = baseExp
+  let totalGold = baseGold
 
   for (const entry of boss.loot_table ?? []) {
+    // Leer exp y gold de la entrada si están definidos
+    if ((entry as any).exp !== undefined) totalExp = (entry as any).exp
+    if ((entry as any).gold_min !== undefined && (entry as any).gold_max !== undefined) {
+      const min = (entry as any).gold_min
+      const max = (entry as any).gold_max
+      totalGold = min + Math.floor(Math.random() * (max - min + 1))
+    }
     if (!entry.item_id) continue
     if (Math.random() < entry.chance) {
       items.push(entry.item_id)
@@ -78,5 +87,5 @@ export function resolveBossLoot(
     }
   }
 
-  return { items, itemDetails, exp: baseExp, gold: baseGold }
+  return { items, itemDetails, exp: totalExp, gold: totalGold }
 }

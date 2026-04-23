@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { RoomEvent, Enemy, Dungeon, Boss, EnemyCombatState } from '@/types/game'
+import { RoomEvent, Enemy, Dungeon, Boss, EnemyCombatState, EnemyAiConfig } from '@/types/game'
 import { initAiState } from '@/lib/game/enemyAi'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ export interface EventEffect {
   startCombat?: boolean
   combatEnemies?: EnemyCombatState[]
   isBoss?: boolean
-  mimicGold?: number       // gold que hubiera dado el cofre (loot extra del mimico)
+  chestTrapGold?: number       // gold que hubiera dado el cofre (loot extra del mimico)
 }
 
 // ─── Constantes del mercader ──────────────────────────────────────────────────
@@ -34,11 +34,9 @@ interface MerchantItem {
   stock: number
 }
 
-// ─── Probabilidad de mimico ───────────────────────────────────────────────────
+// ─── Probabilidad de mímico ───────────────────────────────────────────────────
 
 const MIMIC_CHANCE = 0.15
-// ID del Mímico en la DB — ajustar al que devuelva el INSERT
-const MIMIC_ENEMY_ID = 6
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -50,9 +48,10 @@ interface EventPanelProps {
   enemies: Enemy[]
   dungeon: Dungeon
   depthMult: number
-  granGoblinBoss: Boss | null
+  activeEventBoss: Boss | null
   onSetGranGoblinBoss: (boss: Boss | null) => void
   onResolve: (effect: EventEffect) => void
+  aiConfigs: EnemyAiConfig[]
   isSheet?: boolean
 }
 
@@ -67,12 +66,9 @@ const EVENT_INFO: Record<string, { icon: string; title: string; color: string }>
 
 export function EventPanel({
   event, playerHP, maxHP, playerGold, enemies, dungeon, depthMult,
-  granGoblinBoss, onSetGranGoblinBoss, onResolve, isSheet,
+  activeEventBoss, onSetGranGoblinBoss, onResolve, aiConfigs, isSheet,
 }: EventPanelProps) {
   const info = EVENT_INFO[event.type]
-  const [fetchedBoss, setFetchedBoss] = useState(false)
-
-  // Mercader
   const [merchantStock, setMerchantStock] = useState<MerchantItem[]>([])
   const [localGold, setLocalGold] = useState(playerGold)
   const [lastPurchase, setLastPurchase] = useState<string | null>(null)
@@ -103,26 +99,17 @@ export function EventPanel({
     setMerchantStock(stock)
   }, [event.type])
 
-  async function loadGranGoblin() {
-    if (granGoblinBoss || fetchedBoss) return
-    setFetchedBoss(true)
-    const { createClient } = await import('@/lib/supabase/client')
-    const supabase = createClient()
-    const { data } = await supabase.from('bosses').select('*').eq('name', 'Gran Goblin').single()
-    if (data) onSetGranGoblinBoss(data as Boss)
-  }
-
-  if (event.type === 'cracked_wall' && !fetchedBoss) loadGranGoblin()
+  // Gran Goblin viene precargado desde el servidor via props
 
   // ─── Handlers ────────────────────────────────────────────────────────────────
 
   function handleAmbush() {
     const count = Math.random() < 0.4 ? 2 : 1
-    const pool = enemies.filter(e => e.stats.attack > 0 && e.id !== MIMIC_ENEMY_ID)
+    const pool = enemies.filter(e => e.stats.attack > 0 && !e.enemy_type.includes('mimic' as any))
     const combatEnemies: EnemyCombatState[] = Array.from({ length: count }, (_, i) => {
       const enemy = pool[Math.floor(Math.random() * pool.length)]
       const scaledHP = Math.round(enemy.stats.hp * depthMult)
-      return { instanceId: Date.now() + i, enemy, currentHP: scaledHP, maxHP: scaledHP, alive: true, aiState: initAiState('dumb', 3), statMults: null }
+      return { instanceId: Date.now() + i, enemy, currentHP: scaledHP, maxHP: scaledHP, alive: true, aiState: initAiState('dumb', enemy.max_energy), statMults: null }
     })
     onResolve({ startCombat: true, combatEnemies, isBoss: false })
   }
@@ -130,8 +117,8 @@ export function EventPanel({
   function handleOpenChest() {
     setChestOpened(true)
     if (isMimic) {
-      const mimicTemplate = enemies.find(e => e.id === MIMIC_ENEMY_ID) ?? {
-        id: MIMIC_ENEMY_ID,
+      const mimicTemplate = enemies.find(e => e.enemy_type.includes('mimic' as any)) ?? {
+        id: 0,
         dungeon_id: dungeon.id,
         name: 'Mímico',
         stats: { hp: 70, attack: 18, defense: 7 },
@@ -149,30 +136,44 @@ export function EventPanel({
         aiState: initAiState('dumb', mimicTemplate.max_energy),
         statMults: null,
       }]
-      onResolve({ startCombat: true, combatEnemies, isBoss: false, mimicGold: chestGold })
+      onResolve({ startCombat: true, combatEnemies, isBoss: false, chestTrapGold: chestGold })
     } else {
       onResolve({ gold: chestGold })
     }
   }
 
   function handleCrackedWall() {
-    if (!granGoblinBoss) return
-    const hp = granGoblinBoss.stats.hp
+    if (!activeEventBoss) return
+    const scaledHP = Math.round(activeEventBoss.stats.hp * depthMult)
+    const eventBossAiConfig = aiConfigs.find(c => c.entity_type === 'boss' && c.entity_id === activeEventBoss.id)
+    const rawLootTable = typeof activeEventBoss.loot_table === 'string'
+      ? JSON.parse(activeEventBoss.loot_table)
+      : activeEventBoss.loot_table as any[]
+    // Convertir loot_table de boss (chance/item_id) al formato de enemy (item_chance/gold_min/gold_max/exp)
+    const lootTable = rawLootTable.map((entry: any) => ({
+      exp: entry.exp ?? 0,
+      gold_min: entry.gold_min ?? 0,
+      gold_max: entry.gold_max ?? 0,
+      item_id: entry.item_id ?? null,
+      item_chance: entry.chance ?? 0,
+      item_name: entry.item_name ?? null,
+      item_sprite: entry.item_sprite ?? null,
+    }))
     const combatEnemies: EnemyCombatState[] = [{
       instanceId: Date.now(),
       enemy: {
-        id: granGoblinBoss.id,
-        dungeon_id: granGoblinBoss.dungeon_id,
-        name: granGoblinBoss.name,
-        stats: { hp, attack: granGoblinBoss.stats.attack, defense: granGoblinBoss.stats.defense },
-        loot_table: [],
-        enemy_type: granGoblinBoss.enemy_type,
-        max_energy: granGoblinBoss.max_energy,
+        id: activeEventBoss.id,
+        dungeon_id: activeEventBoss.dungeon_id,
+        name: activeEventBoss.name,
+        stats: { hp: scaledHP, attack: activeEventBoss.stats.attack, defense: activeEventBoss.stats.defense },
+        loot_table: lootTable,
+        enemy_type: activeEventBoss.enemy_type,
+        max_energy: activeEventBoss.max_energy,
       },
-      currentHP: hp,
-      maxHP: hp,
+      currentHP: scaledHP,
+      maxHP: scaledHP,
       alive: true,
-      aiState: initAiState('dumb', granGoblinBoss.max_energy),
+      aiState: initAiState(eventBossAiConfig?.ai_tier ?? 'smart', activeEventBoss.max_energy),
       statMults: null,
     }]
     onResolve({ startCombat: true, combatEnemies, isBoss: true })
@@ -330,14 +331,14 @@ export function EventPanel({
       {event.type === 'cracked_wall' && (
         <>
           <p className="text-gray-300 text-sm">Ves una grieta en la pared que lleva a una cámara oculta. Se escuchan ruidos al otro lado...</p>
-          <p className="text-orange-400 text-xs">⚠️ Peligro desconocido — recompensa asegurada si sobrevivís</p>
+
           <div className="flex gap-2">
             <button
               onClick={handleCrackedWall}
-              disabled={!granGoblinBoss}
+              disabled={!activeEventBoss}
               className="flex-1 bg-orange-700 hover:bg-orange-600 disabled:opacity-40 text-white font-bold py-2 rounded-lg transition text-sm"
             >
-              {granGoblinBoss ? '🧱 Atravesar' : 'Cargando...'}
+              {activeEventBoss ? '🧱 Atravesar' : 'Cargando...'}
             </button>
             <button
               onClick={() => onResolve({})}

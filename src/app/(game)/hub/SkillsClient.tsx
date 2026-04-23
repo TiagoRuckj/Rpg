@@ -5,8 +5,6 @@ import { Player, PlayerSkill } from '@/types/game'
 import { BASE_SKILLS, LOCKED_SKILLS } from '@/lib/game/skills'
 import { createClient } from '@/lib/supabase/client'
 
-const MAX_EQUIPPED = 3
-
 interface Props {
   player: Player
   onBack: () => void
@@ -49,10 +47,6 @@ export default function SkillsClient({ player, onBack, onPlayerUpdate }: Props) 
   function toggleSkill(skillId: string) {
     setEquippedSkills(prev => {
       if (prev.includes(skillId)) return prev.filter(id => id !== skillId)
-      if (prev.length >= MAX_EQUIPPED) {
-        showMsg(`Podés equipar un máximo de ${MAX_EQUIPPED} habilidades`, 'error')
-        return prev
-      }
       return [...prev, skillId]
     })
   }
@@ -83,7 +77,7 @@ export default function SkillsClient({ player, onBack, onPlayerUpdate }: Props) 
         <div className="flex items-center gap-4 p-4 border-b border-gray-800 shrink-0">
           <button onClick={onBack} className="text-gray-400 hover:text-white transition">← Volver</button>
           <h1 className="text-xl font-bold text-purple-400">✨ Habilidades</h1>
-          <span className="ml-auto text-gray-500 text-sm">{equippedSkills.length}/{MAX_EQUIPPED} equipadas</span>
+          <span className="ml-auto text-gray-500 text-sm">{equippedSkills.length} equipadas</span>
         </div>
 
         {/* Mensaje */}
@@ -97,46 +91,40 @@ export default function SkillsClient({ player, onBack, onPlayerUpdate }: Props) 
 
         {/* Slots equipados */}
         <div className="px-4 pt-4 shrink-0">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Equipadas en combate</p>
-          <div className="grid grid-cols-3 gap-3">
-            {Array.from({ length: MAX_EQUIPPED }).map((_, i) => {
-              const skillId = equippedSkills[i]
-              const skill = skillId ? BASE_SKILLS.find(s => s.id === skillId) : null
-              return (
-                <div
-                  key={i}
-                  className={`rounded-xl p-3 border min-h-20 flex flex-col justify-between ${
-                    skill
-                      ? 'bg-purple-950/50 border-purple-700'
-                      : 'bg-gray-800/30 border-dashed border-gray-700'
-                  }`}
-                >
-                  {skill ? (
-                    <>
-                      <div>
-                        <p className="text-white text-sm font-bold">{skill.name}</p>
-                        <p className={`text-xs mt-0.5 ${TYPE_COLORS[skill.type]}`}>{TYPE_LABELS[skill.type]}</p>
-                      </div>
-                      <div className="flex gap-2 text-xs mt-2">
-                        {skill.stamina_cost > 0 && <span className="text-yellow-400">⚡{skill.stamina_cost}</span>}
-                        {skill.mana_cost > 0 && <span className="text-blue-400">🔮{skill.mana_cost}</span>}
-                        <button
-                          onClick={() => toggleSkill(skill.id)}
-                          className="ml-auto text-gray-500 hover:text-red-400 transition"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex items-center justify-center h-full">
-                      <span className="text-gray-700 text-2xl">+</span>
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Equipadas en combate ({equippedSkills.length})</p>
+          {equippedSkills.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-gray-700 bg-gray-800/30 p-4 text-center text-gray-600 text-sm">
+              No tenés skills equipadas
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-3">
+              {equippedSkills.map(skillId => {
+                const skill = BASE_SKILLS.find(s => s.id === skillId)
+                if (!skill) return null
+                return (
+                  <div
+                    key={skillId}
+                    className="rounded-xl p-3 border min-h-20 flex flex-col justify-between bg-purple-950/50 border-purple-700"
+                  >
+                    <div>
+                      <p className="text-white text-sm font-bold">{skill.name}</p>
+                      <p className={`text-xs mt-0.5 ${TYPE_COLORS[skill.type]}`}>{TYPE_LABELS[skill.type]}</p>
                     </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+                    <div className="flex gap-2 text-xs mt-2">
+                      {skill.stamina_cost > 0 && <span className="text-yellow-400">⚡{skill.stamina_cost}</span>}
+                      {skill.mana_cost > 0 && <span className="text-blue-400">🔮{skill.mana_cost}</span>}
+                      <button
+                        onClick={() => toggleSkill(skill.id)}
+                        className="ml-auto text-gray-500 hover:text-red-400 transition"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* Lista de skills — scrolleable */}
@@ -149,17 +137,13 @@ export default function SkillsClient({ player, onBack, onPlayerUpdate }: Props) 
               <div className="flex flex-col gap-2">
                 {availableSkills.map(skill => {
                   const isEquipped = equippedSkills.includes(skill.id)
-                  const isFull = equippedSkills.length >= MAX_EQUIPPED && !isEquipped
                   return (
                     <button
                       key={skill.id}
                       onClick={() => toggleSkill(skill.id)}
-                      disabled={isFull}
                       className={`w-full text-left rounded-xl p-4 border transition ${
                         isEquipped
                           ? 'bg-purple-900/40 border-purple-600 hover:bg-purple-900/60'
-                          : isFull
-                          ? 'bg-gray-800/30 border-gray-700 opacity-40 cursor-not-allowed'
                           : 'bg-gray-800 border-gray-700 hover:border-gray-500'
                       }`}
                     >

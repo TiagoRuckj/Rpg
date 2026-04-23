@@ -55,8 +55,19 @@ export function applyPoison(
   turnsLeft = POISON_TURNS,
 ): StatusEffect[] {
   // Resetear turnos si ya está envenenado (no acumular)
-  const withoutPoison = existing.filter(e => e.type !== 'poison')
+  const withoutPoison = existing.filter(e => !(e.type === 'poison' && e.target === 'player'))
   return [...withoutPoison, { type: 'poison', target: 'player', turnsLeft, value: damagePerTurn }]
+}
+
+export function applyEnemyPoison(
+  instanceId: number,
+  existing: StatusEffect[],
+  damagePerTurn = POISON_DAMAGE,
+  turnsLeft = POISON_TURNS,
+): StatusEffect[] {
+  // Resetear si ya está envenenado ese enemigo
+  const withoutPoison = existing.filter(e => !(e.type === 'poison' && e.target === 'enemy' && e.instanceId === instanceId))
+  return [...withoutPoison, { type: 'poison', target: 'enemy', turnsLeft, value: damagePerTurn, instanceId }]
 }
 
 export function applyStun(
@@ -168,10 +179,26 @@ export function processStatusEffects(
       }
 
       case 'poison': {
-        playerHPDelta -= effect.value
-        const remaining = effect.turnsLeft
-        log.push(`☠️ El veneno te quema! -${effect.value} HP (${remaining} turno${remaining !== 1 ? 's' : ''} restante${remaining !== 1 ? 's' : ''})`)
-        break
+        if (effect.target === 'enemy') {
+          const id = effect.instanceId!
+          const currentHP = (enemyCurrentHPs[id] ?? 0) + (enemyHPDeltas[id] ?? 0)
+          if (currentHP <= 0) continue
+          enemyHPDeltas[id] = (enemyHPDeltas[id] ?? 0) - effect.value
+          const name = enemyNames[id] ?? 'Enemigo'
+          if (effect.turnsLeft > 1) {
+            updatedEffects.push({ ...effect, turnsLeft: effect.turnsLeft - 1 })
+            const remaining = effect.turnsLeft - 1
+            log.push(`☠️ ${name} sufre ${effect.value} de daño por veneno! (${remaining} turno${remaining !== 1 ? 's' : ''} restante${remaining !== 1 ? 's' : ''})`)
+          } else {
+            log.push(`☠️ ${name} sufre ${effect.value} de daño por veneno! (último turno)`)
+          }
+        } else {
+          playerHPDelta -= effect.value
+          const remaining = effect.turnsLeft
+          log.push(`☠️ El veneno te quema! -${effect.value} HP (${remaining} turno${remaining !== 1 ? 's' : ''} restante${remaining !== 1 ? 's' : ''})`)
+          if (effect.turnsLeft > 1) updatedEffects.push({ ...effect, turnsLeft: effect.turnsLeft - 1 })
+        }
+        continue
       }
 
       case 'stun': {

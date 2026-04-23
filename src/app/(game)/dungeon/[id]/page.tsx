@@ -44,11 +44,10 @@ const { data: boss } = await supabase
     .select('*')
     .eq('dungeon_id', id)
 
-  // Cargar configs de IA de los enemigos del dungeon
+  // Cargar configs de IA de los enemigos y bosses del dungeon
   const { data: enemyAiConfigs } = await supabase
     .from('enemy_ai')
     .select('*')
-    .eq('entity_type', 'enemy')
 
   const aiConfigs: EnemyAiConfig[] = (enemyAiConfigs ?? []) as EnemyAiConfig[]
   console.log('[PAGE] aiConfigs cargados desde DB', {
@@ -65,12 +64,32 @@ const { data: boss } = await supabase
         stats: { hp: 30, attack: 8, defense: 3 },
         loot_table: [{ exp: 10, gold_min: 2, gold_max: 5, item_id: null, item_chance: 0 }],
         enemy_type: ['goblin'] as import('@/types/game').EnemyType[],
+        max_energy: 3,
       }]
 
-  // Enriquecer loot_tables (enemies + boss) con nombres de items
+  // Cargar bosses de evento del dungeon
+  const { data: eventBossesRaw } = await supabase
+    .from('bosses')
+    .select('*')
+    .eq('dungeon_id', id)
+    .eq('is_event', true)
+  const eventBosses: Boss[] = (eventBossesRaw ?? []) as Boss[]
+
+  // Parsear loot_tables que puedan venir como string JSON desde Supabase
+  for (const eventBoss of eventBosses) {
+    if (typeof eventBoss.loot_table === 'string') {
+      ;(eventBoss as any).loot_table = JSON.parse(eventBoss.loot_table)
+    }
+  }
+  if (typeof (boss as any).loot_table === 'string') {
+    ;(boss as any).loot_table = JSON.parse((boss as any).loot_table)
+  }
+
+  // Enriquecer loot_tables (enemies + boss + eventBosses) con nombres de items
   const itemIds = [...new Set([
     ...enemyPool.flatMap(e => e.loot_table.map(l => l.item_id)),
     ...(boss?.loot_table ?? []).map((l: any) => l.item_id),
+    ...eventBosses.flatMap(b => (b.loot_table as any[]).map((l: any) => l.item_id)),
   ].filter(Boolean) as number[])]
 
   if (itemIds.length > 0) {
@@ -90,10 +109,18 @@ const { data: boss } = await supabase
         }
       }
     }
-    for (const entry of (boss as any)?.loot_table ?? []) {
+    for (const entry of (boss as any).loot_table ?? []) {
       if (entry.item_id) {
         entry.item_name   = nameMap[entry.item_id]
         entry.item_sprite = spriteMap[entry.item_id]
+      }
+    }
+    for (const eventBoss of eventBosses) {
+      for (const entry of (eventBoss.loot_table as any[]) ?? []) {
+        if (entry.item_id) {
+          entry.item_name   = nameMap[entry.item_id]
+          entry.item_sprite = spriteMap[entry.item_id]
+        }
       }
     }
   }
@@ -105,6 +132,7 @@ const { data: boss } = await supabase
       boss={boss as Boss}
       enemies={enemyPool}
       aiConfigs={aiConfigs}
+      eventBosses={eventBosses}
     />
   )
 }
