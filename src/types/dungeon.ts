@@ -35,16 +35,16 @@ export interface RoomEvent {
 }
 
 export const EVENT_WEIGHTS: { type: RoomEventType; weight: number }[] = [
-  { type: 'treasure',      weight: 0  },
-  { type: 'ambush',        weight: 0  },
-  { type: 'healing_altar', weight: 0  },
-  { type: 'poison_trap',   weight: 0  },
-  { type: 'merchant',      weight: 0  },
-  { type: 'cracked_wall',  weight: 1  },
+  { type: 'treasure',      weight: 3  },
+  { type: 'ambush',        weight: 3  },
+  { type: 'healing_altar', weight: 2  },
+  { type: 'poison_trap',   weight: 2  },
+  { type: 'merchant',      weight: 2  },
+  { type: 'cracked_wall',  weight: 2  },
 ]
 
 export function rollRoomEvent(): RoomEvent | null {
-  // TESTEO: siempre genera evento
+  if (Math.random() > 0.25) return null
   const total = EVENT_WEIGHTS.reduce((s, e) => s + e.weight, 0)
   let r = Math.random() * total
   for (const e of EVENT_WEIGHTS) {

@@ -70,14 +70,14 @@ export default function SkillsClient({ player, onBack, onPlayerUpdate }: Props) 
   const hasChanges = JSON.stringify(equippedSkills.sort()) !== JSON.stringify((player.equipped_skills ?? []).sort())
 
   return (
-    <div className="h-screen bg-gray-950 flex justify-center overflow-hidden">
-      <div className="w-full h-screen bg-gray-950 text-white max-w-3xl flex flex-col overflow-hidden">
+    <div className="h-screen flex flex-col overflow-hidden text-white" style={{ backgroundImage: 'url(/sprites/backgrounds/hub_background.png)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+      <div className="w-full h-screen flex flex-col max-w-3xl mx-auto overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center gap-4 p-4 border-b border-gray-800 shrink-0">
-          <button onClick={onBack} className="text-gray-400 hover:text-white transition">← Volver</button>
-          <h1 className="text-xl font-bold text-purple-400">✨ Habilidades</h1>
-          <span className="ml-auto text-gray-500 text-sm">{equippedSkills.length} equipadas</span>
+        <div className="flex items-center gap-4 px-6 py-3 border-b-4 border-yellow-900 shrink-0" style={{ background: 'rgba(20,10,5,0.88)', boxShadow: '0 4px 0 #000' }}>
+          <button onClick={onBack} className="text-yellow-700 hover:text-yellow-400 transition text-sm" style={{ fontFamily: 'monospace' }}>◀ Volver</button>
+          <h1 className="text-lg font-bold text-purple-300 uppercase tracking-widest" style={{ fontFamily: 'monospace', textShadow: '2px 2px 0 #000' }}>✨ Habilidades</h1>
+          <span className="ml-auto text-yellow-700 text-sm" style={{ fontFamily: 'monospace' }}>{equippedSkills.length} equipadas</span>
         </div>
 
         {/* Mensaje */}
@@ -208,11 +208,19 @@ export default function SkillsClient({ player, onBack, onPlayerUpdate }: Props) 
 
         {/* Footer con guardar */}
         {hasChanges && (
-          <div className="p-4 border-t border-gray-800 shrink-0">
+          <div className="p-4 border-t-4 border-yellow-900 shrink-0" style={{ background: 'rgba(20,10,5,0.95)' }}>
             <button
               onClick={handleSave}
               disabled={saving}
-              className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold py-3 rounded-xl transition"
+              className="w-full font-bold py-3 transition disabled:opacity-40"
+              style={{
+                fontFamily: 'monospace',
+                border: '4px solid #c8860a',
+                background: 'rgba(100,65,0,0.85)',
+                color: '#ffd700',
+                boxShadow: '4px 4px 0 #000',
+                textShadow: '1px 1px 0 #000',
+              }}
             >
               {saving ? 'Guardando...' : 'Guardar cambios'}
             </button>

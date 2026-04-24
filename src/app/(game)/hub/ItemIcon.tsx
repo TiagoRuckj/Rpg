@@ -1,12 +1,16 @@
 'use client'
 
 import React, { useState, useRef } from 'react'
-import { Item } from '@/types/game'
+import { Item, calcUpgradeBonus } from '@/types/game'
+import { PASSIVE_LABELS, WEAPON_PASSIVES } from '@/lib/game/passiveLabels'
 
 interface Props {
   item: Item
   quantity?: number
   equipped?: boolean
+  upgradeLevel?: number
+  skillSlots?: number
+  instancePassives?: string[]
   onClick?: () => void
   actionLabel?: string
   actionDisabled?: boolean
@@ -43,7 +47,8 @@ const sizeClasses = {
 }
 
 export default function ItemIcon({
-  item, quantity, equipped, onClick, actionLabel, actionDisabled, size = 'md'
+  item, quantity, equipped, upgradeLevel = 0, skillSlots = 0, instancePassives = [],
+  onClick, actionLabel, actionDisabled, size = 'md'
 }: Props) {
   const [showTooltip, setShowTooltip] = useState(false)
   const [tooltipStyle, setTooltipStyle] = useState<React.CSSProperties>({})
@@ -53,7 +58,7 @@ export default function ItemIcon({
     if (ref.current) {
       const rect = ref.current.getBoundingClientRect()
       const tooltipW = 208
-      const tooltipH = 220
+      const tooltipH = 300
       const vw = window.innerWidth
       const above = rect.top - tooltipH - 8
       const top = above > 0 ? above : rect.bottom + 8
@@ -117,7 +122,10 @@ export default function ItemIcon({
         >
           {/* Nombre y rareza */}
           <div className="mb-1">
-            <p className={`font-bold text-sm ${rarityText[item.rarity]}`}>{item.name}</p>
+            <p className={`font-bold text-sm ${rarityText[item.rarity]}`}>
+              {item.name}
+              {upgradeLevel > 0 && <span className="text-orange-400 ml-1">+{upgradeLevel}</span>}
+            </p>
             <p className="text-xs text-gray-500">{rarityLabels[item.rarity]}</p>
           </div>
 
@@ -128,11 +136,67 @@ export default function ItemIcon({
 
           {/* Stats */}
           <div className="flex flex-col gap-0.5 text-xs border-t border-gray-700 pt-2 mt-1">
-            {item.stats?.attack   && <span className="text-orange-300">⚔️ +{item.stats.attack} ataque</span>}
-            {item.stats?.defense  && <span className="text-blue-300">🛡️ +{item.stats.defense} defensa</span>}
-            {item.stats?.hp_bonus && <span className="text-red-300">❤️ +{item.stats.hp_bonus} HP</span>}
-            {item.effect?.heal_hp && <span className="text-green-300">💊 Restaura {item.effect.heal_hp} HP</span>}
+            {item.stats?.attack && (() => {
+              const base = item.stats.attack
+              const bonus = calcUpgradeBonus(base, upgradeLevel)
+              return (
+                <span className="text-orange-300">
+                  ⚔️ {base + bonus} ataque
+                  {bonus > 0 && <span className="text-orange-400 ml-1">(+{bonus} mejora)</span>}
+                </span>
+              )
+            })()}
+            {item.stats?.defense    && <span className="text-blue-300">🛡️ +{item.stats.defense} defensa</span>}
+            {item.stats?.hp_bonus   && <span className="text-red-300">❤️ +{item.stats.hp_bonus} HP</span>}
+            {item.stats?.crit_chance && <span className="text-yellow-300">🍀 +{(item.stats.crit_chance * 100).toFixed(0)}% crítico</span>}
+            {item.effect?.heal_hp   && <span className="text-green-300">💊 Restaura {item.effect.heal_hp} HP</span>}
+            {upgradeLevel > 0 && (
+              <span className="text-orange-400">{'★'.repeat(upgradeLevel)}{'☆'.repeat(5 - upgradeLevel)}</span>
+            )}
           </div>
+
+          {/* Pasivas — solo armas */}
+          {item.type === 'weapon' && (() => {
+            const passiveIds = item.stats?.passives ?? WEAPON_PASSIVES[item.stats?.weapon_type ?? 'none'] ?? []
+            if (passiveIds.length === 0) return null
+            return (
+              <div className="flex flex-col gap-1 text-xs border-t border-gray-700 pt-2 mt-1">
+                {passiveIds.map(id => {
+                  const label = PASSIVE_LABELS[id]
+                  if (!label) return null
+                  return (
+                    <div key={id}>
+                      <span className="text-violet-300 font-semibold">✦ {label.name}</span>
+                      <p className="text-gray-400 leading-tight">{label.description}</p>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
+
+          {/* Ranuras de habilidad — solo items de equipo con ranuras */}
+          {skillSlots > 0 && (
+            <div className="flex flex-col gap-1 text-xs border-t border-gray-700 pt-2 mt-1">
+              <div className="flex items-center gap-1">
+                <span className="text-gray-400">Ranuras:</span>
+                <span className="text-violet-400 font-bold">
+                  {'◆'.repeat(instancePassives.length)}{'◇'.repeat(skillSlots - instancePassives.length)}
+                </span>
+                <span className="text-gray-500">({instancePassives.length}/{skillSlots})</span>
+              </div>
+              {instancePassives.map(id => {
+                const label = PASSIVE_LABELS[id]
+                if (!label) return null
+                return (
+                  <div key={id}>
+                    <span className="text-violet-300 font-semibold">✦ {label.name}</span>
+                    <p className="text-gray-400 leading-tight">{label.description}</p>
+                  </div>
+                )
+              })}
+            </div>
+          )}
 
           {/* Precio si aplica */}
           {item.value > 0 && (

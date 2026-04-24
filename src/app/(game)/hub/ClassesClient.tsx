@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import { toggleClassAction } from '@/actions/classActions'
 
 type ClassBonus = {
@@ -8,6 +9,11 @@ type ClassBonus = {
   defense?: number
   crit_bonus?: number
   damage_vs?: { type: string; bonus: number }
+  weapon_type_bonus?: Record<string, { damage: number; crit_bonus: number }>
+  enemy_count_bonus?: { damage_per_enemy: number }
+  chest_gold_bonus?: number
+  crit_mult_bonus?: number
+  type_damage_bonus?: Record<string, number>
 }
 
 type ClassData = {
@@ -21,15 +27,17 @@ type ClassData = {
 interface Props {
   unlockedClasses: ClassData[]
   equippedClasses: string[]
-  playerId: string // This is now technically unused, but left here to avoid breaking the parent component
+  playerId: string
   onBack: () => void
+  onEquippedClassesChange: (classes: string[]) => void
 }
 
-export default function ClassesClient({ unlockedClasses, equippedClasses, playerId, onBack }: Props) {
+export default function ClassesClient({ unlockedClasses, equippedClasses, playerId, onBack, onEquippedClassesChange }: Props) {
   const [equipped, setEquipped] = useState<string[]>(equippedClasses)
   const [isPending, startTransition] = useTransition()
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const router = useRouter()
 
   const handleToggle = (classId: string) => {
     const isEquipped = equipped.includes(classId)
@@ -50,31 +58,30 @@ export default function ClassesClient({ unlockedClasses, equippedClasses, player
     setPendingId(classId)
 
     startTransition(async () => {
-      // ✅ FIX APPLIED HERE: Removed playerId, passing only classId
-      const result = await toggleClassAction(classId) 
-      
+      const result = await toggleClassAction(classId)
       if (!result.success) {
         setEquipped(prev)
         setError(result.error ?? 'Error al actualizar clase.')
         setTimeout(() => setError(null), 3000)
+      } else {
+        onEquippedClassesChange(next)
+        router.refresh()
       }
       setPendingId(null)
     })
   }
 
   return (
-    <div className="min-h-screen bg-black flex justify-center">
-      <div className="w-full min-h-screen bg-gray-900 text-white max-w-5xl">
+    <div className="h-screen flex flex-col overflow-hidden text-white" style={{ backgroundImage: 'url(/sprites/backgrounds/hub_background.png)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+      <div className="w-full min-h-screen flex flex-col max-w-5xl mx-auto">
 
         {/* Header */}
-        <div className="flex items-center gap-4 p-4 border-b border-gray-800">
-          <button onClick={onBack} className="text-gray-400 hover:text-white transition">
-            ← Volver
-          </button>
-          <h1 className="text-xl font-bold text-yellow-500">⚔️ Clases</h1>
-          <span className="ml-auto text-sm text-gray-400">
+        <div className="flex items-center gap-4 px-6 py-3 border-b-4 border-yellow-900 shrink-0" style={{ background: 'rgba(20,10,5,0.88)', boxShadow: '0 4px 0 #000' }}>
+          <button onClick={onBack} className="text-yellow-700 hover:text-yellow-400 transition text-sm" style={{ fontFamily: 'monospace' }}>◀ Volver</button>
+          <h1 className="text-lg font-bold text-yellow-400 uppercase tracking-widest" style={{ fontFamily: 'monospace', textShadow: '2px 2px 0 #000' }}>⚔️ Clases</h1>
+          <span className="ml-auto text-sm" style={{ fontFamily: 'monospace', color: '#7a5a30' }}>
             Equipadas:{' '}
-            <span className={equipped.length >= 3 ? 'text-yellow-400 font-bold' : 'text-white font-bold'}>
+            <span className={equipped.length >= 3 ? 'text-yellow-400 font-bold' : 'text-yellow-200 font-bold'}>
               {equipped.length}/3
             </span>
           </span>
@@ -87,7 +94,7 @@ export default function ClassesClient({ unlockedClasses, equippedClasses, player
           </div>
         )}
 
-        <div className="p-4 flex flex-col gap-3">
+        <div className="p-4 flex flex-col gap-3" style={{ background: 'rgba(10,5,2,0.75)' }}>
 
           {unlockedClasses.length === 0 ? (
             <div className="text-center text-gray-400 py-24">
@@ -106,11 +113,12 @@ export default function ClassesClient({ unlockedClasses, equippedClasses, player
               return (
                 <div
                   key={cls.id}
-                  className={`rounded-lg border p-5 transition-all ${
-                    isEquipped
-                      ? 'border-yellow-500 bg-yellow-500/10'
-                      : 'border-gray-700 bg-gray-800/60'
-                  }`}
+                  className="p-5 transition-all"
+                  style={{
+                    border: `4px solid ${isEquipped ? '#c8860a' : '#4a3000'}`,
+                    background: isEquipped ? 'rgba(80,50,5,0.70)' : 'rgba(20,10,5,0.70)',
+                    boxShadow: isEquipped ? '4px 4px 0 #000, inset 0 0 12px rgba(255,180,0,0.10)' : '4px 4px 0 #000',
+                  }}
                 >
                   <div className="flex items-start justify-between gap-4">
 
@@ -128,21 +136,32 @@ export default function ClassesClient({ unlockedClasses, equippedClasses, player
 
                       {/* Bonuses */}
                       <div className="flex flex-wrap gap-2">
-                        {cls.bonuses.attack != null && (
+                        {cls.bonuses.attack != null && cls.bonuses.attack > 0 && (
                           <BonusBadge icon="⚔️" label="Ataque" value={`+${cls.bonuses.attack}`} />
                         )}
-                        {cls.bonuses.defense != null && (
+                        {cls.bonuses.defense != null && cls.bonuses.defense > 0 && (
                           <BonusBadge icon="🛡️" label="Defensa" value={`+${cls.bonuses.defense}`} />
                         )}
-                        {cls.bonuses.crit_bonus != null && (
+                        {cls.bonuses.crit_bonus != null && cls.bonuses.crit_bonus > 0 && (
                           <BonusBadge icon="🎯" label="Crítico" value={`+${Math.round(cls.bonuses.crit_bonus * 100)}%`} />
                         )}
+                        {cls.bonuses.crit_mult_bonus != null && cls.bonuses.crit_mult_bonus > 0 && (
+                          <BonusBadge icon="💥" label="Mult. crítico" value={`+${(cls.bonuses.crit_mult_bonus * 100).toFixed(0)}%`} />
+                        )}
+                        {cls.bonuses.chest_gold_bonus != null && cls.bonuses.chest_gold_bonus > 0 && (
+                          <BonusBadge icon="📦" label="Gold de cofres" value={`+${Math.round(cls.bonuses.chest_gold_bonus * 100)}%`} />
+                        )}
+                        {cls.bonuses.enemy_count_bonus && (
+                          <BonusBadge icon="💀" label="Por enemigo" value={`+${Math.round(cls.bonuses.enemy_count_bonus.damage_per_enemy * 100)}% daño`} />
+                        )}
+                        {cls.bonuses.weapon_type_bonus && Object.entries(cls.bonuses.weapon_type_bonus).map(([wtype, bonus]) => (
+                          <BonusBadge key={wtype} icon="⚔️" label={`Con ${wtype}`} value={`+${Math.round(bonus.damage * 100)}% daño, +${Math.round(bonus.crit_bonus * 100)}% crit`} />
+                        ))}
+                        {cls.bonuses.type_damage_bonus && Object.entries(cls.bonuses.type_damage_bonus).map(([type, bonus]) => (
+                          <BonusBadge key={type} icon="🎯" label={`vs ${type}`} value={`+${Math.round((bonus as number) * 100)}%`} />
+                        ))}
                         {cls.bonuses.damage_vs && (
-                          <BonusBadge
-                            icon="💀"
-                            label={`vs ${cls.bonuses.damage_vs.type}`}
-                            value={`+${Math.round(cls.bonuses.damage_vs.bonus * 100)}%`}
-                          />
+                          <BonusBadge icon="💀" label={`vs ${cls.bonuses.damage_vs.type}`} value={`+${Math.round(cls.bonuses.damage_vs.bonus * 100)}%`} />
                         )}
                       </div>
 
@@ -156,11 +175,16 @@ export default function ClassesClient({ unlockedClasses, equippedClasses, player
                     <button
                       onClick={() => handleToggle(cls.id)}
                       disabled={isPending || !canEquip}
-                      className={`shrink-0 px-5 py-2.5 rounded-lg text-sm font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                        isEquipped
-                          ? 'bg-gray-700 hover:bg-gray-600 text-white'
-                          : 'bg-yellow-500 hover:bg-yellow-400 text-black'
-                      }`}
+                      className="shrink-0 px-5 py-2.5 text-sm font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      style={{
+                        fontFamily: 'monospace',
+                        border: '4px solid',
+                        borderColor: isEquipped ? '#555' : '#c8860a',
+                        background: isEquipped ? 'rgba(60,60,60,0.6)' : 'rgba(100,65,0,0.85)',
+                        color: '#ffd700',
+                        boxShadow: '4px 4px 0 #000',
+                        textShadow: '1px 1px 0 #000',
+                      }}
                     >
                       {isLoading ? '...' : isEquipped ? 'Desequipar' : 'Equipar'}
                     </button>
@@ -177,8 +201,8 @@ export default function ClassesClient({ unlockedClasses, equippedClasses, player
 
 function BonusBadge({ icon, label, value }: { icon: string; label: string; value: string }) {
   return (
-    <span className="text-xs bg-gray-700 text-gray-200 px-2.5 py-1 rounded flex items-center gap-1.5">
-      {icon} {label}: <span className="text-green-400 font-bold">{value}</span>
+    <span className="text-xs px-2.5 py-1 flex items-center gap-1.5" style={{ fontFamily: 'monospace', border: '2px solid #4a3000', background: 'rgba(0,0,0,0.4)', color: '#a07840', boxShadow: '2px 2px 0 #000' }}>
+      {icon} {label}: <span className="text-yellow-400 font-bold">{value}</span>
     </span>
   )
 }

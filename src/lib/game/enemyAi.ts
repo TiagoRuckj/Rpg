@@ -430,11 +430,6 @@ export function resolveEnemyAction(input: ResolveEnemyActionInput): ResolveEnemy
 
   // Acción de fase prioritaria
   if (input.activePhaseAction) {
-    if (process.env.NODE_ENV === 'development') console.log(`%c[AI:boss] ${enemyName}`, 'color:#f472b6;font-weight:bold', {
-      reason: 'accion_de_fase',
-      action: input.activePhaseAction.name,
-      type: input.activePhaseAction.type,
-    })
     const result = buildActionResult(
       input.activePhaseAction,
       enemy.enemy.stats.attack * (enemy.statMults?.attack_mult ?? 1),

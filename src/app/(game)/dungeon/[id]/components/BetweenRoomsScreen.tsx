@@ -40,6 +40,7 @@ interface BetweenRoomsScreenProps {
   applyPoisonEffect: (damagePerTurn?: number, turnsLeft?: number) => void
   setFightingEvent: (v: boolean) => void
   setEventPendingGold: (gold: number) => void
+  addProficiency: (updates: any) => void
   activeEventBoss: Boss | null
   setActiveEventBoss: (boss: Boss | null) => void
   nextInstanceId: () => number
@@ -65,6 +66,7 @@ export function BetweenRoomsScreen({
   initCombat, setStunnedEnemyIds, setBossInstanceId,
   addLoot, advanceRoom, setCurrentEvent, applyPoisonEffect,
   setFightingEvent, setEventPendingGold, activeEventBoss, setActiveEventBoss,
+  addProficiency,
   nextInstanceId, buildEnemyCombatStates, aiConfigs,
   onOpenRestConsumables, onUseRestItem, onExitDungeon,
   showRestConsumables, setShowRestConsumables,
@@ -104,7 +106,6 @@ export function BetweenRoomsScreen({
       setPhase('boss')
     } else {
       const count = rollEnemyCount(run.currentRoom + 1, dungeon.rank, run.depth)
-      console.log(`[BETWEEN] sala=${run.currentRoom + 1} aiConfigs=${aiConfigs?.length ?? 0} enemies=${enemies.length} detalle=${JSON.stringify(aiConfigs?.map(c => ({ eid: c.entity_id, tier: c.ai_tier })))}`)
       const roomEnemies = buildEnemyCombatStates(enemies, count, depthMult, dungeon.spawn_table, run.currentRoom + 1, aiConfigs)
       setCurrentEnemy(roomEnemies[0].enemy)
       setStunnedEnemyIds([])
@@ -145,10 +146,15 @@ export function BetweenRoomsScreen({
     if (effect.gold) {
       addLoot({ gold: effect.gold })
       setLastEventMsg(`💰 Encontraste ${effect.gold} gold en el cofre!`)
+      addProficiency({ chests_opened: 1 })
     }
     if (effect.goldCost && effect.itemBought) {
+      addLoot({ gold: -effect.goldCost })
       buyMerchantItemAction(effect.itemBought, effect.goldCost).then(result => {
-        if (!result.success) setLastEventMsg(`❌ Error al comprar: ${result.error}`)
+        if (!result.success) {
+          addLoot({ gold: effect.goldCost! }) // revertir si falla
+          setLastEventMsg(`❌ Error al comprar: ${result.error}`)
+        }
       })
     }
     if (effect.poison) applyPoisonEffect(effect.poison.damagePerTurn, effect.poison.turnsLeft)

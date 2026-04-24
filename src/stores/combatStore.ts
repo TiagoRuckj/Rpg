@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy, RoomEvent } from '@/types/game'
+import { CombatState, EnemyCombatState, RunState, AccumulatedLoot, Enemy, RoomEvent, PlayerProficiencies } from '@/types/game'
 import { StatusEffect, applyBurn, applyPoison, getPlayerPoisonInfo } from '@/lib/game/statusEffects'
 
 interface CombatStore extends CombatState {
@@ -51,6 +51,11 @@ interface CombatStore extends CombatState {
   setBossDefeated: (val: boolean) => void
   setBossInstanceId: (instanceId: number | null) => void
   increaseDepth: () => void
+
+  // Proficiency tracking durante la run
+  proficiencyUpdates: Partial<PlayerProficiencies>
+  addProficiency: (updates: Partial<PlayerProficiencies>) => void
+  resetProficiencyUpdates: () => void
 }
 
 const initialCombatState: CombatState = {
@@ -87,6 +92,7 @@ export const useCombatStore = create<CombatStore>((set) => ({
   combatPhase: 'idle' as const,
   lastPlayerDamage: 0,
   lastEnemyDamages: {},
+  proficiencyUpdates: {},
 
   // --- Combat ---
   initCombat: (playerHP, playerStamina, playerMana, enemies) => set((state) => ({
@@ -239,4 +245,19 @@ export const useCombatStore = create<CombatStore>((set) => ({
       currentEvent: null,
     },
   })),
+
+  addProficiency: (updates) => set((state) => {
+    const next = { ...state.proficiencyUpdates }
+    for (const [key, value] of Object.entries(updates)) {
+      const k = key as keyof PlayerProficiencies
+      if (k === 'biggest_damage') {
+        next[k] = Math.max(next[k] ?? 0, value as number)
+      } else {
+        (next as any)[k] = ((next as any)[k] ?? 0) + (value as number)
+      }
+    }
+    return { proficiencyUpdates: next }
+  }),
+
+  resetProficiencyUpdates: () => set({ proficiencyUpdates: {} }),
 }))

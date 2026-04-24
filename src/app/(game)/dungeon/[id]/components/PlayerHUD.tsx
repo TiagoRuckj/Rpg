@@ -14,13 +14,21 @@ interface PlayerHUDProps {
   isBeingHit?: boolean
 }
 
+const STAT_LABELS: Record<string, string> = {
+  attack: 'ATK', defense: 'DEF', magic: 'MAG', damage: 'DMG',
+}
+
 export function PlayerHUD({
   name, playerHP, playerStamina, playerMana,
   maxHP, maxStamina, maxMana, statusEffects = [],
   isBeingHit = false,
 }: PlayerHUDProps) {
   const hpPct = Math.max(0, Math.round((playerHP / maxHP) * 100))
-  const poison = statusEffects.find(e => e.type === 'poison')
+
+  const playerEffects = statusEffects.filter(e => e.target === 'player')
+  const poison  = playerEffects.find(e => e.type === 'poison')
+  const debuffs = playerEffects.filter(e => e.type === 'debuff')
+  const buffs   = playerEffects.filter(e => e.type === 'buff')
 
   return (
     <div className={`bg-gray-800 rounded-lg p-4 transition-all duration-150 ${isBeingHit ? 'ring-2 ring-red-500 bg-red-950/30' : ''}`}>
@@ -36,12 +44,16 @@ export function PlayerHUD({
           style={{ width: `${hpPct}%` }}
         />
       </div>
-      <div className="flex gap-4 text-sm">
+      <div className="flex gap-4 text-sm flex-wrap">
         <span className="text-yellow-400">⚡ {playerStamina}/{maxStamina}</span>
         <span className="text-blue-400">🔮 {playerMana}/{maxMana}</span>
-        {poison && poison.turnsLeft > 0 && (
-          <span className="text-purple-400">☠️ Veneno ({poison.turnsLeft}t)</span>
-        )}
+        {poison && <span className="text-purple-400">☠️ Veneno</span>}
+        {buffs.map((e, i) => (
+          <span key={i} className="text-green-400">⬆️ {STAT_LABELS[e.stat ?? ''] ?? e.stat}</span>
+        ))}
+        {debuffs.map((e, i) => (
+          <span key={i} className="text-red-400">⬇️ {STAT_LABELS[e.stat ?? ''] ?? e.stat}</span>
+        ))}
       </div>
     </div>
   )

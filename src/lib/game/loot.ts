@@ -13,47 +13,69 @@ export interface EnemyLootResult {
   itemId: number | null
   itemName: string | null
   itemSprite: string | null
+  materialIds: number[]   // materiales dropeados (independientes del item principal)
 }
 
 export interface BossLootResult {
-  items: number[]                                    // ids de items dropeados
-  itemDetails: { id: number; name: string; sprite: string }[]  // para mostrar en UI
+  items: number[]
+  itemDetails: { id: number; name: string; sprite: string }[]
   exp: number
   gold: number
 }
 
 // ─── Resolución de loot de enemigo normal ────────────────────────────────────
 
+// Tipos de items que se consideran materiales (drop independiente)
+const MATERIAL_TYPES = new Set(['material'])
+
 export function resolveEnemyLoot(
   enemy: Enemy,
-  luckMultiplier: number = 1,  // depthMult u otro modificador de suerte
+  luckMultiplier: number = 1,
+  goldPctBonus: number = 0,
 ): EnemyLootResult {
   if (!enemy.loot_table || enemy.loot_table.length === 0) {
-    return { exp: 0, gold: 0, itemId: null, itemName: null, itemSprite: null }
+    return { exp: 0, gold: 0, itemId: null, itemName: null, itemSprite: null, materialIds: [] }
   }
 
-  // Primera entrada determina exp y gold
   const primary = enemy.loot_table[0]
-  const gold = primary.gold_min + Math.floor(Math.random() * (primary.gold_max - primary.gold_min + 1))
+  const baseGold = primary.gold_min + Math.floor(Math.random() * (primary.gold_max - primary.gold_min + 1))
+  const gold = Math.floor(baseGold * (1 + goldPctBonus))
   const exp = primary.exp
 
-  // Tirar drop para cada entrada con item_id
+  // Separar entradas de equipo y materiales
+  // Los materiales se identifican por item_type === 'material' o por estar en entradas sin exp/gold
+  const equipEntries = enemy.loot_table.filter(e =>
+    e.item_id !== null && (e as any).item_type !== 'material'
+  )
+  const materialEntries = enemy.loot_table.filter(e =>
+    e.item_id !== null && (e as any).item_type === 'material'
+  )
+
+  // Drop de equipo — solo uno, el primero que pase el roll
   let itemId: number | null = null
   let itemName: string | null = null
   let itemSprite: string | null = null
 
-  for (const entry of enemy.loot_table) {
-    if (entry.item_id === null) continue
+  for (const entry of equipEntries) {
     const adjustedChance = Math.min(0.95, entry.item_chance * luckMultiplier)
     if (Math.random() < adjustedChance) {
       itemId = entry.item_id
       itemName = (entry as any).item_name ?? null
       itemSprite = (entry as any).item_sprite ?? null
-      break  // un solo item por enemigo
+      break
     }
   }
 
-  return { exp, gold, itemId, itemName, itemSprite }
+  // Drop de materiales — cada uno tira independientemente
+  const materialIds: number[] = []
+  for (const entry of materialEntries) {
+    const adjustedChance = Math.min(0.95, entry.item_chance * luckMultiplier)
+    if (Math.random() < adjustedChance) {
+      materialIds.push(entry.item_id!)
+    }
+  }
+
+  return { exp, gold, itemId, itemName, itemSprite, materialIds }
 }
 
 // ─── Resolución de loot de boss ───────────────────────────────────────────────
@@ -62,6 +84,7 @@ export function resolveBossLoot(
   boss: Boss,
   baseExp: number = 100,
   baseGold: number = 50,
+  goldPctBonus: number = 0,
 ): BossLootResult {
   const items: number[] = []
   const itemDetails: { id: number; name: string; sprite: string }[] = []
@@ -69,7 +92,6 @@ export function resolveBossLoot(
   let totalGold = baseGold
 
   for (const entry of boss.loot_table ?? []) {
-    // Leer exp y gold de la entrada si están definidos
     if ((entry as any).exp !== undefined) totalExp = (entry as any).exp
     if ((entry as any).gold_min !== undefined && (entry as any).gold_max !== undefined) {
       const min = (entry as any).gold_min
@@ -87,5 +109,6 @@ export function resolveBossLoot(
     }
   }
 
+  totalGold = Math.floor(totalGold * (1 + goldPctBonus))
   return { items, itemDetails, exp: totalExp, gold: totalGold }
 }

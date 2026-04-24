@@ -1,6 +1,6 @@
 import {
   PlayerStats, BossStats, PrimaryStats, ClassBonuses,
-  EnemyType, EquippedGear, PlayerSkill, WeaponType, critChance, getWeaponAttackBonus,
+  EnemyType, EquippedGear, PlayerSkill, WeaponType, getWeaponAttackBonus,
 } from '@/types/game'
 
 export interface DamageResult {
@@ -28,8 +28,8 @@ function randomVariation(base: number): number {
 }
 
 // Sistema de crítico y overcrit
-function rollCritical(suerte: number, classCritBonus: number = 0): { isCritical: boolean; isOvercrit: boolean } {
-  const chance = critChance(suerte) + classCritBonus
+function rollCritical(baseCritChance: number, classCritBonus: number = 0): { isCritical: boolean; isOvercrit: boolean } {
+  const chance = baseCritChance + classCritBonus
 
   if (chance >= 1.0) {
     const overflowChance = chance - 1.0
@@ -41,9 +41,11 @@ function rollCritical(suerte: number, classCritBonus: number = 0): { isCritical:
   return { isCritical, isOvercrit: false }
 }
 
-function critMultiplier(isCritical: boolean, isOvercrit: boolean): number {
-  if (isOvercrit) return 2.0
-  if (isCritical) return 1.75
+const CRIT_MULT = 1.75
+
+function critMultiplier(isCritical: boolean, isOvercrit: boolean, critMult: number = CRIT_MULT): number {
+  if (isOvercrit) return critMult * critMult
+  if (isCritical) return critMult
   return 1.0
 }
 
@@ -51,16 +53,17 @@ function critMultiplier(isCritical: boolean, isOvercrit: boolean): number {
 function calculatePhysicalDamage(
   attack: number,
   defense: number,
-  suerte: number,
+  baseCritChance: number,
   multiplier: number = 1,
   classCritBonus: number = 0,
-  ignoresDefense: boolean = false
+  ignoresDefense: boolean = false,
+  critMult: number = CRIT_MULT
 ): DamageResult {
-  const reductionPct = ignoresDefense ? 0 : Math.min(0.75, defense / (defense + 50))
+  const reductionPct = ignoresDefense ? 0 : Math.min(0.75, defense / (defense + 200))
   const base = attack * multiplier * (1 - reductionPct)
   const varied = randomVariation(base)
-  const { isCritical, isOvercrit } = rollCritical(suerte, classCritBonus)
-  const damage = Math.max(1, Math.round(varied * critMultiplier(isCritical, isOvercrit)))
+  const { isCritical, isOvercrit } = rollCritical(baseCritChance, classCritBonus)
+  const damage = Math.max(1, Math.round(varied * critMultiplier(isCritical, isOvercrit, critMult)))
   return { damage, isCritical, isOvercrit, blocked: false }
 }
 
@@ -68,13 +71,14 @@ function calculatePhysicalDamage(
 function calculateMagicalDamage(
   inteligencia: number,
   multiplier: number,
-  suerte: number,
-  classCritBonus: number = 0
+  baseCritChance: number,
+  classCritBonus: number = 0,
+  critMult: number = CRIT_MULT
 ): DamageResult {
   const base = inteligencia * 2 * multiplier
   const varied = randomVariation(base)
-  const { isCritical, isOvercrit } = rollCritical(suerte, classCritBonus)
-  const damage = Math.max(1, Math.round(varied * critMultiplier(isCritical, isOvercrit)))
+  const { isCritical, isOvercrit } = rollCritical(baseCritChance, classCritBonus)
+  const damage = Math.max(1, Math.round(varied * critMultiplier(isCritical, isOvercrit, critMult)))
   return { damage, isCritical, isOvercrit, blocked: false }
 }
 
@@ -90,51 +94,47 @@ export function resolvePlayerAttack(
   classBonuses?: ClassBonuses,
   enemyTypes?: EnemyType[],
   skillModifiers?: Pick<PlayerSkill, 'ignores_weapon' | 'ignores_defense' | 'ignores_class_bonus'>,
-  staffMagicBonus: number = 0    // bastón: bonus de daño mínimo a hechizos mágicos
+  staffMagicBonus: number = 0,
+  weaponTypeDamageBonus: Partial<Record<string, number>> = {},
+  critMult: number = CRIT_MULT,
+  defenseIgnorePct: number = 0
 ): { damageResult: DamageResult; newEnemyHP: number } {
   let damageResult: DamageResult
 
   const classCritBonus = classBonuses?.crit_bonus ?? 0
 
+  // Calcular multiplicador de tipo (clases + arma) antes del crit
+  let typeMultiplier = 1
+  if (enemyTypes && enemyTypes.length > 0) {
+    for (const enemyType of enemyTypes) {
+      const classBonus = classBonuses?.type_damage_bonus?.[enemyType] ?? 0
+      const weaponBonus = weaponTypeDamageBonus[enemyType] ?? 0
+      typeMultiplier += classBonus + weaponBonus
+    }
+  }
+
   if (isSkill && skillType === 'magical') {
     damageResult = calculateMagicalDamage(
-      primaryStats.inteligencia, damageMultiplier, primaryStats.suerte, classCritBonus
+      primaryStats.inteligencia, damageMultiplier * typeMultiplier, playerStats.crit_chance, classCritBonus, critMult
     )
-    // Bastón: garantizar daño mínimo = staffMagicBonus
     if (staffMagicBonus > 0) {
       damageResult = { ...damageResult, damage: Math.max(damageResult.damage, staffMagicBonus) }
     }
   } else {
     const multiplier = isSkill ? damageMultiplier : 1
-
-    // Attack base del jugador:
-    // - Si ignores_weapon: restar el bonus del arma equipada
-    // - Si ignores_class_bonus: no sumar el bonus de clase
     const weaponBonus = (skillModifiers?.ignores_weapon) ? getWeaponAttackBonus(gear) : 0
     const classAttackBonus = (skillModifiers?.ignores_class_bonus) ? 0 : (classBonuses?.attack ?? 0)
     const totalAttack = playerStats.attack - weaponBonus + classAttackBonus
 
     damageResult = calculatePhysicalDamage(
       totalAttack,
-      bossStats.defense,
-      primaryStats.suerte,
-      multiplier,
+      bossStats.defense * (1 - defenseIgnorePct),
+      playerStats.crit_chance,
+      multiplier * typeMultiplier,
       classCritBonus,
-      skillModifiers?.ignores_defense ?? false
+      skillModifiers?.ignores_defense ?? false,
+      critMult
     )
-  }
-
-  // Bonus de daño por tipo de enemigo
-  if (classBonuses?.type_damage_bonus && enemyTypes && enemyTypes.length > 0) {
-    let typeMultiplier = 1
-    for (const enemyType of enemyTypes) {
-      const bonus = classBonuses.type_damage_bonus[enemyType]
-      if (bonus) typeMultiplier += bonus
-    }
-    damageResult = {
-      ...damageResult,
-      damage: Math.round(damageResult.damage * typeMultiplier),
-    }
   }
 
   const newEnemyHP = Math.max(0, currentEnemyHP - damageResult.damage)
@@ -160,7 +160,7 @@ export function resolveEnemyAttack(
     }
   }
 
-  const reductionPct = playerStats.defense / (playerStats.defense + 50)
+  const reductionPct = playerStats.defense / (playerStats.defense + 200)
   const base = bossStats.attack * (1 - reductionPct)
   const damage = Math.max(1, randomVariation(base))
 
@@ -174,103 +174,160 @@ export function resolveEnemyAttack(
 // ─── Weapon Passives ─────────────────────────────────────────────────────────
 
 export interface WeaponPassiveResult {
-  // Espada: daño splash a adyacentes (map instanceId → damage)
   splashDamage: Record<number, number>
-  // Hacha: ejecutar al objetivo (solo si HP < 15%)
   executed: boolean
-  // Martillo: stun al objetivo (no ataca este turno)
   stunned: boolean
-  // Lanza: segundo ataque (damage ya calculado, 0 si no triggereo)
   secondAttackDamage: number
-  // Bastón: bonus de daño mínimo al hechizo (se suma externamente)
   staffMagicBonus: number
+  typeDamageBonus: Partial<Record<string, number>>
+  critMultBonus: number
+  defenseIgnorePct: number   // % de defensa ignorada (ej: 0.05 = ignora 5%)
   log: string[]
 }
 
+export interface WeaponPassiveContext {
+  isSkill: boolean
+  skillType: 'physical' | 'magical' | 'mixed' | undefined
+  primaryDamage: number           // daño ya calculado del ataque principal
+  targetCurrentHP: number         // HP del objetivo ANTES del ataque principal
+  targetMaxHP: number
+  targetInstanceId: number
+  targetName: string
+  targetEnemyTypes: string[]      // tipos del enemigo objetivo (para bonus por tipo)
+  adjacentEnemies: { instanceId: number; name: string; currentHP: number; defense: number }[]
+  playerAttack: number            // ataque total del jugador
+  playerSuerte: number
+  enemyDefense: number
+  staffAttackBonus: number        // stats.attack del bastón
+}
+
+type WeaponPassiveHandler = (ctx: WeaponPassiveContext) => Partial<WeaponPassiveResult>
+
+const EMPTY_PASSIVE_RESULT: WeaponPassiveResult = {
+  splashDamage: {},
+  executed: false,
+  stunned: false,
+  secondAttackDamage: 0,
+  staffMagicBonus: 0,
+  typeDamageBonus: {},
+  critMultBonus: 0,
+  defenseIgnorePct: 0,
+  log: [],
+}
+
+// Registry global de pasivas — cada entrada es un handler identificado por string.
+// Agregar una pasiva nueva = agregar una entrada acá + el ID en el stats.passives del item en DB.
+export const PASSIVE_REGISTRY: Record<string, WeaponPassiveHandler> = {
+
+  splash: (ctx) => {
+    if (ctx.isSkill) return {}
+    if (ctx.adjacentEnemies.length === 0) return {}
+    const splashDamage: Record<number, number> = {}
+    const log: string[] = []
+    const splashBase = Math.round(ctx.primaryDamage * 0.15)
+    for (const adj of ctx.adjacentEnemies) {
+      const reductionPct = Math.min(0.75, adj.defense / (adj.defense + 200))
+      const splashDmg = Math.max(1, Math.round(splashBase * (1 - reductionPct)))
+      splashDamage[adj.instanceId] = splashDmg
+      log.push(`⚔️ Daño en área a ${adj.name} por ${splashDmg}!`)
+    }
+    return { splashDamage, log }
+  },
+
+  execution: (ctx) => {
+    if (ctx.isSkill) return {}
+    const hpPct = ctx.targetCurrentHP / ctx.targetMaxHP
+    if (hpPct >= 0.15) return {}
+    const executed = Math.random() < 0.50
+    if (!executed) return {}
+    return {
+      executed: true,
+      log: [`💀 ¡EJECUCIÓN! ${ctx.targetName} fue eliminado instantáneamente!`],
+    }
+  },
+
+  stun: (ctx) => {
+    if (ctx.isSkill) return {}
+    const stunned = Math.random() < 0.07
+    if (!stunned) return {}
+    return {
+      stunned: true,
+      log: [`🔨 ¡${ctx.targetName} retrocede y no podrá atacar este turno!`],
+    }
+  },
+
+  double_strike: (ctx) => {
+    if (ctx.isSkill) return {}
+    if (Math.random() >= 0.10) return {}
+    const reductionPct = Math.min(0.75, ctx.enemyDefense / (ctx.enemyDefense + 50))
+    const base = ctx.playerAttack * (1 - reductionPct)
+    const secondDmg = Math.max(1, Math.round((0.8 + Math.random() * 0.4) * base))
+    return {
+      secondAttackDamage: secondDmg,
+      log: [`🏹 ¡Ataque doble! Segundo golpe por ${secondDmg}!`],
+    }
+  },
+
+  staff_magic_boost: (ctx) => {
+    if (!ctx.isSkill || ctx.skillType !== 'magical') return {}
+    return { staffMagicBonus: ctx.staffAttackBonus * 2 }
+  },
+
+  goblin_slayer: (ctx) => {
+    if (!ctx.targetEnemyTypes.includes('goblin')) return {}
+    return { typeDamageBonus: { goblin: 0.5 } }
+  },
+
+  goblin_assassin: (ctx) => {
+    if (!ctx.targetEnemyTypes.includes('goblin')) return {}
+    return { typeDamageBonus: { goblin: 0.20 } }
+  },
+
+  sharpened: (ctx) => {
+    return { defenseIgnorePct: 0.05 }
+  },
+
+  bow_crit: (ctx) => {
+    return { critMultBonus: 0.25 }  // +25% de daño crítico (se suma al baseCritMult)
+  },
+
+}
+
+// Pasivas por defecto según tipo de arma — se usan si el item no tiene stats.passives definido.
+// Esto garantiza que los items existentes en DB sigan funcionando sin migraciones.
+export const WEAPON_PASSIVES: Partial<Record<WeaponType, string[]>> = {
+  sword:  ['splash'],
+  axe:    ['execution'],
+  hammer: ['stun'],
+  spear:  ['double_strike'],
+  staff:  ['staff_magic_boost'],
+  bow:    ['bow_crit'],
+}
+
+// Labels y defaults exportados desde archivo separado para uso en cliente
+export { PASSIVE_LABELS, WEAPON_PASSIVES } from '@/lib/game/passiveLabels'
+
 export function resolveWeaponPassive(
   weaponType: WeaponType,
-  isSkill: boolean,
-  skillType: 'physical' | 'magical' | 'mixed' | undefined,
-  primaryDamage: number,           // daño ya calculado del ataque principal
-  targetCurrentHP: number,         // HP del objetivo ANTES del ataque principal
-  targetMaxHP: number,
-  targetInstanceId: number,
-  targetName: string,
-  adjecentEnemies: { instanceId: number; name: string; currentHP: number; defense: number }[],
-  playerAttack: number,            // ataque total del jugador (para lanza)
-  playerSuerte: number,
-  enemyDefense: number,
-  staffAttackBonus: number,        // stats.attack del bastón
+  ctx: WeaponPassiveContext,
+  itemPassives?: string[],
 ): WeaponPassiveResult {
-  const result: WeaponPassiveResult = {
-    splashDamage: {},
-    executed: false,
-    stunned: false,
-    secondAttackDamage: 0,
-    staffMagicBonus: 0,
-    log: [],
+  const passiveIds = itemPassives ?? WEAPON_PASSIVES[weaponType] ?? []
+  const result: WeaponPassiveResult = { ...EMPTY_PASSIVE_RESULT, splashDamage: {}, typeDamageBonus: {}, critMultBonus: 0, log: [] }
+  for (const id of passiveIds) {
+    const handler = PASSIVE_REGISTRY[id]
+    if (!handler) continue
+    const partial = handler(ctx)
+    if (partial.executed)           result.executed = true
+    if (partial.stunned)            result.stunned = true
+    if (partial.secondAttackDamage) result.secondAttackDamage = partial.secondAttackDamage
+    if (partial.staffMagicBonus)    result.staffMagicBonus = partial.staffMagicBonus
+    if (partial.splashDamage)       Object.assign(result.splashDamage, partial.splashDamage)
+    if (partial.typeDamageBonus)    Object.assign(result.typeDamageBonus, partial.typeDamageBonus)
+    if (partial.critMultBonus)   result.critMultBonus += partial.critMultBonus
+    if (partial.defenseIgnorePct)   result.defenseIgnorePct = Math.min(1, result.defenseIgnorePct + partial.defenseIgnorePct)
+    if (partial.log)                result.log.push(...partial.log)
   }
-
-  switch (weaponType) {
-    case 'sword': {
-      if (isSkill) break
-      if (adjecentEnemies.length === 0) break
-      const splashBase = Math.round(primaryDamage * 0.15)
-      for (const adj of adjecentEnemies) {
-        const reductionPct = Math.min(0.75, adj.defense / (adj.defense + 50))
-        const splashDmg = Math.max(1, Math.round(splashBase * (1 - reductionPct)))
-        result.splashDamage[adj.instanceId] = splashDmg
-        result.log.push(`⚔️ Daño en área a ${adj.name} por ${splashDmg}!`)
-      }
-      break
-    }
-
-    case 'axe': {
-      // Solo ataques normales (no skills)
-      if (isSkill) break
-      const hpPct = targetCurrentHP / targetMaxHP
-      if (hpPct < 0.15) {
-        const executed = Math.random() < 0.50
-        if (executed) {
-          result.executed = true
-          result.log.push(`💀 ¡EJECUCIÓN! ${targetName} fue eliminado instantáneamente!`)
-        }
-      }
-      break
-    }
-
-    case 'hammer': {
-      // Solo ataques normales
-      if (isSkill) break
-      const stunned = Math.random() < 0.07
-      if (stunned) {
-        result.stunned = true
-        result.log.push(`🔨 ¡${targetName} retrocede y no podrá atacar este turno!`)
-      }
-      break
-    }
-
-    case 'spear': {
-      const triggered = Math.random() < 0.10
-      if (!triggered) break
-      // Segundo ataque: daño normal sin variación crítica extra (simplificado)
-      const reductionPct = Math.min(0.75, enemyDefense / (enemyDefense + 50))
-      const base = playerAttack * (1 - reductionPct)
-      const secondDmg = Math.max(1, Math.round((0.8 + Math.random() * 0.4) * base))
-      result.secondAttackDamage = secondDmg
-      result.log.push(`🏹 ¡Ataque doble! Segundo golpe por ${secondDmg}!`)
-      break
-    }
-
-    case 'staff': {
-      // Solo skills mágicas
-      if (!isSkill || skillType !== 'magical') break
-      result.staffMagicBonus = staffAttackBonus * 2
-      // No logueamos aquí — se suma silenciosamente al daño del hechizo
-      break
-    }
-  }
-
   return result
 }
 
@@ -417,4 +474,3 @@ export function calcHealCost(missingHP: number): number {
   if (missingHP <= 100) return 0
   return Math.ceil((missingHP - 100) * 2)
 }
-

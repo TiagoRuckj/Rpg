@@ -1,7 +1,9 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { deriveStatsWithGear, PrimaryStats, EquippedGear, EMPTY_GEAR, Item } from '@/types/game'
+import { deriveStatsWithGear, PrimaryStats, EquippedGear, EMPTY_GEAR, Item, rollSkillSlots } from '@/types/game'
+import { updateProficienciesAndEvaluate, AchievementUnlocked } from './achievements'
+import { PlayerProficiencies } from '@/types/game'
 
 type RunOutcome = 'victory' | 'extracted' | 'defeat'
 
@@ -11,6 +13,7 @@ interface SaveRunInput {
   gold: number
   items: number[]
   currentHP?: number
+  proficiencyUpdates?: Partial<PlayerProficiencies>  // métricas a sumar/actualizar
 }
 
 interface SaveRunResult {
@@ -19,6 +22,7 @@ interface SaveRunResult {
   newExp?: number
   newGold?: number
   newLevel?: number
+  newAchievements?: AchievementUnlocked[]
 }
 
 export async function saveRunAction(input: SaveRunInput): Promise<SaveRunResult> {
@@ -56,7 +60,7 @@ export async function saveRunAction(input: SaveRunInput): Promise<SaveRunResult>
     // Calcular maxHP con gear para clampear correctamente
     const { data: equippedItems } = await supabase
       .from('inventories')
-      .select('items!inner(id, type, stats, effect, name, rarity, value, sprite)')
+      .select('upgrade_level, instance_passives, items!inner(id, type, stats, effect, name, rarity, value, sprite)')
       .eq('player_id', user.id)
       .eq('equipped', true)
 
@@ -65,16 +69,19 @@ export async function saveRunAction(input: SaveRunInput): Promise<SaveRunResult>
       for (const entry of equippedItems) {
         const item = (entry as any).items as Item
         if (!item) continue
+        const upgradeLevel = (entry as any).upgrade_level ?? 0
+        const instancePassives = (entry as any).instance_passives ?? []
+      const equippedItem = { item, upgradeLevel, instancePassives }
         switch (item.type) {
-          case 'weapon':   gear.weapon = item; break
-          case 'necklace': gear.necklace = item; break
+          case 'weapon':   gear.weapon = equippedItem; break
+          case 'necklace': gear.necklace = equippedItem; break
           case 'ring':
-            if (!gear.ring1) gear.ring1 = item
-            else gear.ring2 = item
+            if (!gear.ring1) gear.ring1 = equippedItem
+            else gear.ring2 = equippedItem
             break
           case 'armor': {
             const slot = item.stats?.slot
-            if (slot && slot in gear) (gear as any)[slot] = item
+            if (slot && slot in gear) (gear as any)[slot] = equippedItem
             break
           }
         }
@@ -133,12 +140,27 @@ export async function saveRunAction(input: SaveRunInput): Promise<SaveRunResult>
             .insert({ player_id: user.id, item_id: itemId, quantity: 1, equipped: false })
         }
       } else {
-        // Armas/armaduras/accesorios: siempre insertar fila nueva
+        // Armas/armaduras/accesorios: siempre insertar fila nueva con ranuras de habilidad
         await supabase
           .from('inventories')
-          .insert({ player_id: user.id, item_id: itemId, quantity: 1, equipped: false })
+          .insert({ player_id: user.id, item_id: itemId, quantity: 1, equipped: false, skill_slots: rollSkillSlots() })
       }
     }
+  }
+
+  // Evaluar logros si hay updates de proficiencias
+  let newAchievements: AchievementUnlocked[] = []
+  if (input.proficiencyUpdates && Object.keys(input.proficiencyUpdates).length > 0) {
+    // Agregar total_gold ganado en la run
+    const updatesWithGold = {
+      ...input.proficiencyUpdates,
+      total_gold: (input.proficiencyUpdates.total_gold ?? 0) + input.gold,
+    }
+    newAchievements = await updateProficienciesAndEvaluate(
+      user.id,
+      updatesWithGold,
+      player.proficiencies as PlayerProficiencies,
+    )
   }
 
   return {
@@ -146,5 +168,6 @@ export async function saveRunAction(input: SaveRunInput): Promise<SaveRunResult>
     newExp,
     newGold,
     newLevel,
+    newAchievements,
   }
 }

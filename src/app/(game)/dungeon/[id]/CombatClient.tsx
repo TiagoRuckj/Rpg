@@ -111,6 +111,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     setStatusEffects, applyPoisonEffect,
     combatPhase, setCombatPhase,
     setLastPlayerDamage, setLastEnemyDamages,
+    proficiencyUpdates, addProficiency,
   } = useCombatStore()
 
   const derived = deriveStats(player.primary_stats)
@@ -272,8 +273,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       // alive NO se cambia todavía
     })
     setCurrentEnemies(enemiesHPOnly)
-
-    // 2. Animación hit/crit en el objetivo
+    setStatusEffects(ptResult.newStatusEffects)
     const targetState = enemyTurnStates[safeTargetIndex]
     if (targetState && ptResult.damageDealt > 0) {
       triggerEnemyAnim(targetState.instanceId, ptResult.isCritical || ptResult.isOvercrit ? 'crit' : 'hit', hitDuration)
@@ -292,7 +292,14 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       const fallen = run.currentEnemies.find(e => e.instanceId === id)
       if (fallen) {
         flushSync(() => addLog(`🏆 ¡Derrotaste a ${fallen.enemy.name}!`))
-        registerKillAction({ enemyTypes: fallen.enemy.enemy_type as EnemyType[], hasWeaponEquipped: true, isBossKill: false, dungeonId: dungeon.id })
+        registerKillAction({
+          enemyTypes: fallen.enemy.enemy_type as EnemyType[],
+          weaponType: ptResult.isMagicAction ? undefined : ptResult.weaponType,
+          isMagicKill: ptResult.isMagicAction,
+          biggestDamage: ptResult.maxDamageDealt,
+          isGoblinKing: fallen.enemy.enemy_type?.includes('goblin') && fallen.enemy.name.toLowerCase().includes('rey'),
+          isGranGoblin: fallen.enemy.name.toLowerCase().includes('gran goblin'),
+        })
       }
       // Primero dead anim, luego marcar alive:false
       // Usamos función de estado en setCurrentEnemies para evitar closures stale
@@ -327,10 +334,11 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     for (const id of ptResult.defeatedEnemyInstanceIds) {
       const fallen = run.currentEnemies.find(e => e.instanceId === id)
       if (!fallen) continue
-      const loot = resolveEnemyLoot(fallen.enemy, depthMult)
+      const loot = resolveEnemyLoot(fallen.enemy, depthMult, player.achievement_bonus?.gold_pct ?? 0)
       totalExp  += loot.exp
       totalGold += loot.gold
-      addLoot({ exp: loot.exp, gold: loot.gold, items: loot.itemId ? [loot.itemId] : [] })
+      const allItems = [...(loot.itemId ? [loot.itemId] : []), ...loot.materialIds]
+      addLoot({ exp: loot.exp, gold: loot.gold, items: allItems })
       setLastLoot({ exp: loot.exp, gold: loot.gold, itemId: loot.itemId, itemName: loot.itemName })
       if (loot.itemId && loot.itemName) {
         modalItems.push({ itemId: loot.itemId, itemName: loot.itemName, sprite: (loot as any).itemSprite ?? undefined })
@@ -339,9 +347,19 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
 
     const allDefeatedByPlayer = updatedEnemies.every(e => !e.alive)
     if (allDefeatedByPlayer) {
-      // Esperar que la animación de muerte termine
       await new Promise(r => setTimeout(r, hitDuration + 800))
       applyEnemyUpdates(ptResult.updatedEnemyHPs, ptResult.updatedAiStates, [], run.currentEnemies, ptResult.defeatedEnemyInstanceIds)
+
+      // Procesar un tick de efectos del jugador aunque no haya turno enemigo
+      const efResult = await endTurnAction({
+        statusEffects: ptResult.newStatusEffects,
+        enemies: [],
+        currentPlayerHP: ptResult.newPlayerHP,
+      })
+      if (efResult.log.length > 0) efResult.log.forEach(m => addLog(m))
+      setPlayerHP(efResult.newPlayerHP)
+      setStatusEffects(efResult.newStatusEffects)
+
       nextTurn()
       setCombatPhase('idle')
 
@@ -472,8 +490,9 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     for (const id of efResult.defeatedByEffects) {
       const fallen = run.currentEnemies.find(e => e.instanceId === id)
       if (fallen) {
-        const loot = resolveEnemyLoot(fallen.enemy, depthMult)
-        addLoot({ exp: loot.exp, gold: loot.gold, items: loot.itemId ? [loot.itemId] : [] })
+        const loot = resolveEnemyLoot(fallen.enemy, depthMult, player.achievement_bonus?.gold_pct ?? 0)
+        const allItems = [...(loot.itemId ? [loot.itemId] : []), ...loot.materialIds]
+        addLoot({ exp: loot.exp, gold: loot.gold, items: allItems })
         effectKillExp  += loot.exp
         effectKillGold += loot.gold
         if (loot.itemId && loot.itemName) effectKillItems.push({ itemId: loot.itemId, itemName: loot.itemName })
@@ -490,7 +509,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
 
     if (etResult.playerDefeated || efResult.playerDefeated) {
       setStatus('defeat')
-      saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1 })
+      saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1, proficiencyUpdates })
       return
     }
 
@@ -634,7 +653,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       }
 
       // Boss real
-      const bossLoot = resolveBossLoot(boss)
+      const bossLoot = resolveBossLoot(boss, undefined, undefined, player.achievement_bonus?.gold_pct ?? 0)
       const totalExp   = run.accumulatedLoot.exp  + bossLoot.exp
       const totalGold  = run.accumulatedLoot.gold + bossLoot.gold
       const totalItems = [...run.accumulatedLoot.items, ...bossLoot.items]
@@ -642,8 +661,15 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       setBossDefeated(true)
       setBossInstanceId(null)
       setStatus('victory')
-      registerKillAction({ enemyTypes: boss.enemy_type ?? [], hasWeaponEquipped: true, isBossKill: true, dungeonId: dungeon.id })
-      saveRunAction({ outcome: 'victory', exp: totalExp, gold: totalGold, items: totalItems, currentHP: newHP })
+      registerKillAction({
+        enemyTypes: boss.enemy_type ?? [],
+        weaponType: ptResult.isMagicAction ? undefined : ptResult.weaponType,
+        isMagicKill: ptResult.isMagicAction,
+        biggestDamage: ptResult.maxDamageDealt,
+        isGoblinKing: boss.name.toLowerCase().includes('rey goblin'),
+        isGranGoblin: boss.name.toLowerCase().includes('gran goblin'),
+      })
+      saveRunAction({ outcome: 'victory', exp: totalExp, gold: totalGold, items: totalItems, currentHP: newHP, proficiencyUpdates: proficiencyUpdates })
 
       // Construir items para el modal
       const modalItems = bossLoot.itemDetails.map((d, i) => ({
@@ -659,7 +685,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
 
     if (playerDef) {
       setStatus('defeat')
-      saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1 })
+      saveRunAction({ outcome: 'defeat', exp: run.accumulatedLoot.exp, gold: 0, items: [], currentHP: 1, proficiencyUpdates })
       return true
     }
     return false
@@ -704,11 +730,6 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     // Recalcular targetIndex sobre el array filtrado (sin muertos)
     const targetInstanceId = run.currentEnemies[safeTargetIndex]?.instanceId
     const filteredTargetIndex = Math.max(0, enemyStates.findIndex(e => e.instanceId === targetInstanceId))
-    if (process.env.NODE_ENV === 'development') {
-      const bossState = enemyStates.find(e => e.instanceId === bossEnemyState?.instanceId)
-      console.log('[DEBUG boss aiState al inicio del turno]', bossState?.aiState)
-      console.log('[DEBUG enemyStates enviados al servidor]', enemyStates.map(e => ({ name: e.name, instanceId: e.instanceId, currentHP: e.currentHP })))
-    }
 
     const ptResult = await playerTurnAction({
       action, skillUsed: skill, itemUsed,
@@ -753,11 +774,12 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       const newHP = ptResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP
       return { ...e, currentHP: Math.max(0, newHP) }
     })
-    // Aplicar aiStates y adds, pero preservar alive=true por ahora
+    // Aplicar adds, pero preservar alive=true por ahora
     let enemiesAfterPlayer = enemiesHPOnlyBoss.map(e => {
       const newAiState = ptResult.updatedAiStates[e.instanceId]
       return newAiState ? { ...e, aiState: newAiState } : e
     })
+    setStatusEffects(ptResult.newStatusEffects)
 
     // Agregar adds invocados
     if (ptResult.summonEnemyIds.length > 0) {
@@ -792,8 +814,9 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
         ?? enemiesAfterPlayer.find(e => e.instanceId === id)
       if (fallen) {
         flushSync(() => addLog(`🏆 ¡Derrotaste a ${fallen.enemy.name}!`))
-        const loot = resolveEnemyLoot(fallen.enemy, depthMult)
-        addLoot({ exp: loot.exp, gold: loot.gold, items: loot.itemId ? [loot.itemId] : [] })
+        const loot = resolveEnemyLoot(fallen.enemy, depthMult, player.achievement_bonus?.gold_pct ?? 0)
+        const allItems = [...(loot.itemId ? [loot.itemId] : []), ...loot.materialIds]
+        addLoot({ exp: loot.exp, gold: loot.gold, items: allItems })
       }
       const idToKill = id
       setTimeout(() => {
@@ -818,9 +841,20 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     if (allDefeatedByPlayer) {
       await new Promise(r => setTimeout(r, 500))
       applyEnemyUpdates(ptResult.updatedEnemyHPs, ptResult.updatedAiStates, [], enemiesAfterPlayer, clientDefeatedIds)
+
+      // Procesar un tick de efectos del jugador aunque no haya turno enemigo
+      const efResult = await endTurnAction({
+        statusEffects: ptResult.newStatusEffects,
+        enemies: [],
+        currentPlayerHP: ptResult.newPlayerHP,
+      })
+      if (efResult.log.length > 0) efResult.log.forEach(m => addLog(m))
+      setPlayerHP(efResult.newPlayerHP)
+      setStatusEffects(efResult.newStatusEffects)
+
       nextTurn()
       setCombatPhase('idle')
-      resolveOutcome(true, false, ptResult.newPlayerHP)
+      resolveOutcome(true, false, efResult.newPlayerHP)
       return
     }
 
@@ -986,7 +1020,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
 
   async function handleExitDungeon() {
     setIsSaving(true)
-    await saveRunAction({ outcome: 'extracted', exp: run.accumulatedLoot.exp, gold: run.accumulatedLoot.gold, items: run.accumulatedLoot.items, currentHP: playerHP })
+    await saveRunAction({ outcome: 'extracted', exp: run.accumulatedLoot.exp, gold: run.accumulatedLoot.gold, items: run.accumulatedLoot.items, currentHP: playerHP, proficiencyUpdates })
     await clearRunAction(playerHP); router.replace('/hub')
   }
 
@@ -1006,6 +1040,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
         addLoot={addLoot} advanceRoom={advanceRoom} setCurrentEvent={setCurrentEvent}
         applyPoisonEffect={applyPoisonEffect}
         setFightingEvent={setFightingEvent} setEventPendingGold={setEventPendingGold}
+        addProficiency={addProficiency}
         activeEventBoss={activeEventBoss} setActiveEventBoss={setActiveEventBoss}
         nextInstanceId={nextInstanceId} buildEnemyCombatStates={buildEnemyCombatStates} aiConfigs={aiConfigs}
         onOpenRestConsumables={handleOpenRestConsumables}

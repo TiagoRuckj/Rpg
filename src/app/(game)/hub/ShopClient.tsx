@@ -74,7 +74,7 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
   }
 
   // ── Carrito de venta ────────────────────────────────────────────────────────
-  const sellableItems = inventory.filter(e => e.item && !e.equipped)
+  const sellableItems = inventory.filter(e => e.item && !e.equipped && !e.locked)
 
   function addToSellCart(entry: InventoryEntry) {
     if (!entry.item || entry.equipped) return
@@ -135,31 +135,45 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
   }
 
   return (
-    <div className="h-screen bg-gray-950 flex justify-center overflow-hidden">
-      <div className="w-full h-screen bg-gray-950 text-white flex flex-col max-w-2xl overflow-hidden">
+    <div className="h-screen flex flex-col overflow-hidden text-white" style={{ backgroundImage: 'url(/sprites/backgrounds/hub_background.png)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+      <div className="w-full h-screen flex flex-col max-w-2xl mx-auto overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center gap-4 p-4 border-b border-gray-800">
-          <button onClick={onBack} className="text-gray-400 hover:text-white transition">← Volver</button>
-          <h1 className="text-xl font-bold text-yellow-500">🏪 Tienda</h1>
-          <span className="ml-auto text-yellow-400 font-bold">💰 {currentPlayer.gold} gold</span>
+        <div className="flex items-center gap-4 px-6 py-3 border-b-4 border-yellow-900 shrink-0" style={{ background: 'rgba(20,10,5,0.88)', boxShadow: '0 4px 0 #000' }}>
+          <button onClick={onBack} className="text-yellow-700 hover:text-yellow-400 transition text-sm" style={{ fontFamily: 'monospace' }}>◀ Volver</button>
+          <h1 className="text-lg font-bold text-yellow-400 uppercase tracking-widest" style={{ fontFamily: 'monospace', textShadow: '2px 2px 0 #000' }}>🏪 Tienda</h1>
+          <span className="ml-auto text-yellow-400 font-bold" style={{ fontFamily: 'monospace' }}>💰 {currentPlayer.gold}</span>
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 p-4 pb-0">
+        <div className="flex gap-2 px-4 pt-4 pb-0 shrink-0" style={{ background: 'rgba(10,5,2,0.75)' }}>
           <button
             onClick={() => { setTab('buy'); setSellCart({}) }}
-            className={`flex-1 py-2 rounded-lg font-bold text-sm transition ${
-              tab === 'buy' ? 'bg-yellow-500 text-black' : 'bg-gray-800 text-gray-400 hover:text-white'
-            }`}
+            className="flex-1 py-2 font-bold text-sm transition"
+            style={{
+              fontFamily: 'monospace',
+              border: '4px solid',
+              borderColor: tab === 'buy' ? '#c8860a' : '#4a3000',
+              background: tab === 'buy' ? 'rgba(120,80,0,0.85)' : 'rgba(20,10,5,0.70)',
+              color: tab === 'buy' ? '#ffd700' : '#7a5a30',
+              boxShadow: tab === 'buy' ? '4px 4px 0 #000' : 'none',
+              textShadow: tab === 'buy' ? '1px 1px 0 #000' : 'none',
+            }}
           >
             🛒 Comprar
           </button>
           <button
             onClick={() => { setTab('sell'); setBuyCart({}) }}
-            className={`flex-1 py-2 rounded-lg font-bold text-sm transition ${
-              tab === 'sell' ? 'bg-yellow-500 text-black' : 'bg-gray-800 text-gray-400 hover:text-white'
-            }`}
+            className="flex-1 py-2 font-bold text-sm transition"
+            style={{
+              fontFamily: 'monospace',
+              border: '4px solid',
+              borderColor: tab === 'sell' ? '#c8860a' : '#4a3000',
+              background: tab === 'sell' ? 'rgba(120,80,0,0.85)' : 'rgba(20,10,5,0.70)',
+              color: tab === 'sell' ? '#ffd700' : '#7a5a30',
+              boxShadow: tab === 'sell' ? '4px 4px 0 #000' : 'none',
+              textShadow: tab === 'sell' ? '1px 1px 0 #000' : 'none',
+            }}
           >
             💸 Vender
           </button>
@@ -167,8 +181,8 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
 
         <ToastContainer toasts={toasts} />
 
-        {/* Contenido scrolleable — padding inferior para no quedar tapado por el panel fijo */}
-        <div className="flex-1 overflow-y-auto p-4 pb-36">
+        {/* Contenido scrolleable */}
+        <div className="flex-1 overflow-y-auto p-4 pb-36" style={{ background: 'rgba(10,5,2,0.75)' }}>
 
           {tab === 'buy' && (
             <div className="grid grid-cols-5 gap-3">
@@ -217,6 +231,9 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
                           <ItemIcon
                             item={entry.item}
                             quantity={inCart > 0 ? entry.quantity - inCart : entry.quantity}
+                            upgradeLevel={entry.upgrade_level ?? 0}
+                            skillSlots={entry.skill_slots ?? 0}
+                            instancePassives={entry.instance_passives ?? []}
                             size="lg"
                             actionLabel={`${sellPrice} 💰`}
                             actionDisabled={inCart >= entry.quantity}
@@ -233,7 +250,7 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
 
         {/* Panel fijo inferior */}
         <div className="fixed bottom-0 left-0 right-0 flex justify-center pointer-events-none">
-          <div className="w-full max-w-2xl bg-gray-950 border-t border-gray-700 p-4 pointer-events-auto">
+          <div className="w-full max-w-2xl border-t-4 border-yellow-900 p-4 pointer-events-auto" style={{ background: 'rgba(20,10,5,0.97)', boxShadow: '0 -4px 0 #000' }}>
             {tab === 'buy' && (
               buyCount === 0
                 ? <p className="text-center text-gray-500 text-sm">Tocá un item para agregarlo al carrito</p>

@@ -27,6 +27,22 @@ export interface PlayerSkill {
   ignores_defense?: boolean
   ignores_class_bonus?: boolean
   burn_chance?: number
-  splash_multiplier?: number  // si está definido, aplica ese % del daño a todos los adyacentes
-  poison_all?: boolean        // si true, aplica veneno a todos los enemigos vivos
+  splash_multiplier?: number
+  poison_all?: boolean
+  heal_player_pct?: number        // cura X% del HP máximo del jugador
+  apply_player_buff?: {           // buff al jugador (ataque, defensa, etc.)
+    stat: 'attack' | 'defense' | 'magic' | 'damage'
+    multiplier: number
+    turns: number
+  }
+  apply_enemy_debuff?: {          // debuff al enemigo objetivo
+    stat: 'attack' | 'defense' | 'magic' | 'damage'
+    multiplier: number
+    turns: number
+  }
+  apply_enemy_status?: {          // status especial al enemigo (ej: engaño)
+    type: string
+    turns: number
+    value?: number
+  }
 }

@@ -50,10 +50,6 @@ const { data: boss } = await supabase
     .select('*')
 
   const aiConfigs: EnemyAiConfig[] = (enemyAiConfigs ?? []) as EnemyAiConfig[]
-  console.log('[PAGE] aiConfigs cargados desde DB', {
-    total: aiConfigs.length,
-    detalle: aiConfigs.map(c => ({ id: c.id, entity_type: c.entity_type, entity_id: c.entity_id, tier: c.ai_tier })),
-  })
 
   const enemyPool: Enemy[] = (enemies && enemies.length > 0)
     ? enemies as Enemy[]

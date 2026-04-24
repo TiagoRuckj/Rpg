@@ -21,7 +21,7 @@ export async function getPlayerMaxHPAction(): Promise<number | null> {
 
   const { data: equippedItems } = await supabase
     .from('inventories')
-    .select('items!inner(id, type, stats, effect, name, rarity, value, sprite)')
+    .select('upgrade_level, items!inner(id, type, stats, effect, name, rarity, value, sprite)')
     .eq('player_id', user.id)
     .eq('equipped', true)
 
@@ -30,16 +30,18 @@ export async function getPlayerMaxHPAction(): Promise<number | null> {
     for (const entry of equippedItems) {
       const item = (entry as any).items as Item
       if (!item) continue
+      const upgradeLevel = (entry as any).upgrade_level ?? 0
+      const equippedItem = { item, upgradeLevel }
       switch (item.type) {
-        case 'weapon':   gear.weapon = item; break
-        case 'necklace': gear.necklace = item; break
+        case 'weapon':   gear.weapon = equippedItem; break
+        case 'necklace': gear.necklace = equippedItem; break
         case 'ring':
-          if (!gear.ring1) gear.ring1 = item
-          else gear.ring2 = item
+          if (!gear.ring1) gear.ring1 = equippedItem
+          else gear.ring2 = equippedItem
           break
         case 'armor': {
           const slot = item.stats?.slot
-          if (slot && slot in gear) (gear as any)[slot] = item
+          if (slot && slot in gear) (gear as any)[slot] = equippedItem
           break
         }
       }

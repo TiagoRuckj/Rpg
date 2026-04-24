@@ -84,11 +84,12 @@ function FloatingDamage({ value, isCrit, isPlayer }: { value: number; isCrit: bo
 // ─── Badges de estado activo ─────────────────────────────────────────────────
 
 const EFFECT_CONFIG: Record<string, { icon: string; bg: string; label: string }> = {
-  burn:   { icon: '🔥', bg: 'bg-orange-600', label: 'Quemadura' },
-  poison: { icon: '☠️', bg: 'bg-purple-700', label: 'Veneno'    },
-  stun:   { icon: '🔨', bg: 'bg-yellow-600', label: 'Aturdido'  },
-  buff:   { icon: '✨', bg: 'bg-blue-600',   label: 'Buff'      },
-  debuff: { icon: '⬇️', bg: 'bg-red-700',    label: 'Debuff'    },
+  burn:     { icon: '🔥', bg: 'bg-orange-600', label: 'Quemadura' },
+  poison:   { icon: '☠️', bg: 'bg-purple-700', label: 'Veneno'    },
+  stun:     { icon: '🔨', bg: 'bg-yellow-600', label: 'Aturdido'  },
+  buff:     { icon: '✨', bg: 'bg-blue-600',   label: 'Buff'      },
+  debuff:   { icon: '⬇️', bg: 'bg-red-700',    label: 'Debuff'    },
+  confused: { icon: '🎭', bg: 'bg-pink-700',   label: 'Confundido'},
 }
 
 function StatusBadges({ effects }: { effects: StatusEffect[] }) {

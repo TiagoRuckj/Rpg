@@ -7,7 +7,7 @@
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
-export type StatusEffectType = 'burn' | 'poison' | 'stun' | 'buff' | 'debuff'
+export type StatusEffectType = 'burn' | 'poison' | 'stun' | 'buff' | 'debuff' | 'confused'
 
 // Qué stat modifica un buff/debuff
 export type StatTarget = 'attack' | 'defense' | 'magic' | 'damage'
@@ -79,7 +79,59 @@ export function applyStun(
   return [...withoutStun, { type: 'stun', target: 'enemy', turnsLeft, value: 0, instanceId }]
 }
 
-// Buff sobre un enemigo (ej: el Rey Goblin se buffea a sí mismo)
+// Buff sobre el jugador (ej: Grito de Guerra sube el ataque)
+export function applyPlayerBuff(
+  stat: StatTarget,
+  multiplier: number,
+  existing: StatusEffect[],
+  turnsLeft = 3,
+): StatusEffect[] {
+  const withoutBuff = existing.filter(e => !(e.type === 'buff' && e.target === 'player' && e.stat === stat))
+  return [...withoutBuff, { type: 'buff', target: 'player', turnsLeft, value: multiplier, stat }]
+}
+
+// Debuff sobre un enemigo (ej: Debilitar reduce el ataque del enemigo)
+export function applyEnemyDebuff(
+  instanceId: number,
+  stat: StatTarget,
+  multiplier: number,
+  existing: StatusEffect[],
+  turnsLeft = 3,
+): StatusEffect[] {
+  const withoutDebuff = existing.filter(e => !(e.type === 'debuff' && e.target === 'enemy' && e.instanceId === instanceId && e.stat === stat))
+  return [...withoutDebuff, { type: 'debuff', target: 'enemy', turnsLeft, value: multiplier, instanceId, stat }]
+}
+
+// Confused sobre un enemigo (ej: Engaño — 10% de errar su ataque)
+export function applyConfused(
+  instanceId: number,
+  existing: StatusEffect[],
+  missChance = 0.10,
+  turnsLeft = 3,
+): StatusEffect[] {
+  const withoutConfused = existing.filter(e => !(e.type === 'confused' && e.instanceId === instanceId))
+  return [...withoutConfused, { type: 'confused', target: 'enemy', turnsLeft, value: missChance, instanceId }]
+}
+
+// Lee el multiplicador de buff del jugador para un stat
+export function getPlayerBuffMult(effects: StatusEffect[], stat: StatTarget): number {
+  return effects
+    .filter(e => e.target === 'player' && e.type === 'buff' && e.stat === stat)
+    .reduce((acc, e) => acc * e.value, 1)
+}
+
+// Lee el multiplicador de debuff de un enemigo para un stat
+export function getEnemyDebuffMult(effects: StatusEffect[], instanceId: number, stat: StatTarget): number {
+  return effects
+    .filter(e => e.target === 'enemy' && e.type === 'debuff' && e.instanceId === instanceId && e.stat === stat)
+    .reduce((acc, e) => acc * e.value, 1)
+}
+
+// Retorna la miss chance de confused para un enemigo (0 si no está confundido)
+export function getEnemyMissChance(effects: StatusEffect[], instanceId: number): number {
+  const confused = effects.find(e => e.type === 'confused' && e.instanceId === instanceId)
+  return confused?.value ?? 0
+}
 export function applyEnemyBuff(
   instanceId: number,
   stat: StatTarget,
@@ -213,13 +265,22 @@ export function processStatusEffects(
       }
 
       case 'buff': {
-        // Los buffs de enemigos no tienen efecto por turno — solo modifican stats pasivamente.
-        // Se loguean solo el primer turno (turnsLeft == valor inicial).
+        // Buffs pasivos — solo decrementar turnos
         break
       }
 
       case 'debuff': {
-        // Los debuffs sobre el jugador tampoco tienen efecto por turno — modifican stats pasivamente.
+        // Debuffs pasivos — solo decrementar turnos
+        break
+      }
+
+      case 'confused': {
+        const id = effect.instanceId!
+        const currentHP = enemyCurrentHPs[id] ?? 0
+        if (currentHP <= 0) continue
+        const name = enemyNames[id] ?? 'Enemigo'
+        const remaining = effect.turnsLeft - 1
+        if (remaining > 0) log.push(`😵 ${name} está confundido! (${remaining} turno${remaining !== 1 ? 's' : ''} restante${remaining !== 1 ? 's' : ''})`)
         break
       }
 

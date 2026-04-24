@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { PlayerProficiencies } from '@/types/game'
 
 const MAX_EQUIPPED_CLASSES = 3
 
@@ -51,12 +52,16 @@ export async function toggleClassAction(classId: string): Promise<{
   return { success: true, equipped_classes: newEquipped }
 }
 
-// ─── Registrar kill y chequear desbloqueos ────────────────────────────────────
+// ─── Registrar kill y evaluar logros ─────────────────────────────────────────
 export async function registerKillAction(params: {
   enemyTypes: string[]
-  hasWeaponEquipped: boolean
-  isBossKill: boolean
+  weaponType?: string        // tipo de arma equipada al momento del kill
+  isMagicKill?: boolean      // si el kill fue con magia
+  isBossKill?: boolean
   dungeonId?: number
+  biggestDamage?: number     // daño máximo del golpe que mató al enemigo
+  isGoblinKing?: boolean
+  isGranGoblin?: boolean
 }): Promise<{ newlyUnlocked: string[] }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -64,55 +69,47 @@ export async function registerKillAction(params: {
 
   const { data: player } = await supabase
     .from('players')
-    .select('proficiencies, unlocked_classes')
+    .select('proficiencies, unlocked_classes, achievement_bonus')
     .eq('id', user.id)
     .single()
 
   if (!player) return { newlyUnlocked: [] }
 
-  const proficiencies = player.proficiencies ?? {}
-  const unlocked: string[] = player.unlocked_classes ?? []
-  const newlyUnlocked: string[] = []
+  const prof = (player.proficiencies ?? {}) as PlayerProficiencies
 
-  // Actualizar contadores
-  const newProf = { ...proficiencies }
-
-  // Kills con espada equipada
-  if (params.hasWeaponEquipped) {
-    newProf.sword_kills = (newProf.sword_kills ?? 0) + 1
+  // Construir updates de proficiencias
+  const updates: Partial<PlayerProficiencies> = {
+    total_kills: 1,
   }
 
-  // Bosses derrotados
-  if (params.isBossKill) {
-    newProf.bosses_defeated = (newProf.bosses_defeated ?? 0) + 1
+  // Kill por tipo de arma
+  if (params.isMagicKill) {
+    updates.magic_kills = 1
+  } else if (params.weaponType) {
+    const weaponKey = `${params.weaponType}_kills` as keyof PlayerProficiencies
+    if (weaponKey in prof || ['sword_kills','axe_kills','hammer_kills','bow_kills','spear_kills'].includes(weaponKey)) {
+      (updates as any)[weaponKey] = 1
+    }
   }
 
   // Kills por tipo de enemigo
-  for (const type of params.enemyTypes) {
-    const key = `${type}_kills`
-    newProf[key] = (newProf[key] ?? 0) + 1
+  if (params.enemyTypes.includes('goblin')) updates.goblin_kills = 1
+
+  // Bosses específicos
+  if (params.isGoblinKing) updates.goblin_king_defeated = 1
+  if (params.isGranGoblin) updates.gran_goblin_defeated = 1
+
+  // Daño máximo
+  if (params.biggestDamage && params.biggestDamage > (prof.biggest_damage ?? 0)) {
+    updates.biggest_damage = params.biggestDamage
   }
 
-  // Chequear desbloqueos
-  // Espadachín: 100 kills con espada
-  if (!unlocked.includes('swordsman') && (newProf.sword_kills ?? 0) >= 100) {
-    newlyUnlocked.push('swordsman')
-  }
+  const { updateProficienciesAndEvaluate } = await import('./achievements')
+  const newAchievements = await updateProficienciesAndEvaluate(user.id, updates, prof)
 
-  // Asesino de Goblins: matar al boss de la Cueva de Goblins (dungeon_id = 1)
-  if (!unlocked.includes('goblin_slayer') && params.isBossKill && params.dungeonId === 1) {
-    newlyUnlocked.push('goblin_slayer')
-  }
-
-  const newUnlocked = [...unlocked, ...newlyUnlocked]
-
-  await supabase
-    .from('players')
-    .update({
-      proficiencies: newProf,
-      unlocked_classes: newUnlocked,
-    })
-    .eq('id', user.id)
+  const newlyUnlocked = newAchievements
+    .filter(a => a.achievement.title_id)
+    .map(a => a.achievement.title_id!)
 
   return { newlyUnlocked }
 }
