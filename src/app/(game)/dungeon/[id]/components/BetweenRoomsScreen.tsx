@@ -1,4 +1,5 @@
 'use client'
+import BgImage from '../../../hub/BgImage'
 
 import { useState, useEffect } from 'react'
 import {
@@ -173,10 +174,8 @@ export function BetweenRoomsScreen({
   const hasUnresolvedEvent = !!(run.currentEvent && !run.currentEvent.resolved)
 
   return (
-    <div className="min-h-screen flex justify-center" style={{
-      backgroundImage: `url(/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'})`,
-      backgroundSize: 'cover', backgroundPosition: 'center',
-    }}>
+    <div className="min-h-screen flex justify-center" style={{}}>
+      <BgImage src={`/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'}`} />
       <div className="w-full min-h-screen text-white p-4 flex flex-col gap-4 max-w-2xl" style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}>
 
         {/* Header */}

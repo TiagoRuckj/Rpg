@@ -1,4 +1,5 @@
 'use client'
+import BgImage from './BgImage'
 
 import { useState } from 'react'
 import { Player, InventoryEntry, calcUpgradeBonus, calcUpgradeGoldCost, UPGRADE_REQUIREMENTS } from '@/types/game'
@@ -60,14 +61,14 @@ export default function SmithClient({ player, inventory, onBack, onPlayerUpdate,
 
   // Cristales disponibles en el inventario
   const availableCrystals = currentInventory.filter(e =>
-    e.item?.type === 'material' && e.item?.stats?.preset_passive && e.quantity > 0
+    e.item?.type === 'material' && ((e.item?.stats) as any)?.preset_passive && e.quantity > 0
   )
 
   // Cristales compatibles con el item seleccionado
   const compatibleCrystals = selectedEntry
     ? availableCrystals.filter(c => {
-        const crystalType = c.item?.stats?.crystal_type ?? ''
-        const passiveId = c.item?.stats?.preset_passive ?? ''
+        const crystalType = ((c.item?.stats) as any)?.crystal_type ?? ''
+        const passiveId = ((c.item?.stats) as any)?.preset_passive ?? ''
         const alreadyEngrafted = (selectedEntry.instance_passives ?? []).includes(passiveId)
         return crystalCompatible(crystalType, selectedEntry.item?.type ?? '') && !alreadyEngrafted
       })
@@ -147,7 +148,8 @@ export default function SmithClient({ player, inventory, onBack, onPlayerUpdate,
   const hasSlots = slotsFilled < slotsTotal
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden text-white" style={{ backgroundImage: 'url(/sprites/backgrounds/hub_background.png)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className="h-screen flex flex-col overflow-hidden text-white" style={{}}>
+      <BgImage src="/sprites/backgrounds/hub_background.png" />
       <div className="w-full h-screen flex flex-col max-w-2xl mx-auto overflow-hidden">
 
         {/* Header */}
@@ -169,7 +171,7 @@ export default function SmithClient({ player, inventory, onBack, onPlayerUpdate,
                 color: tab === t ? '#f97316' : '#7a5a30',
                 borderBottom: tab === t ? '4px solid #f97316' : '4px solid transparent',
                 background: tab === t ? 'rgba(80,30,5,0.60)' : 'transparent',
-                textShadow: tab === t ? '1px 1px 0 #000' : 'none',
+                textShadow: tab === t ? '1px 1px 0 #000' : 'none'
               }}
             >
               {t === 'upgrade' ? '⬆️ Mejorar' : '✨ Engastar'}
@@ -415,7 +417,7 @@ export default function SmithClient({ player, inventory, onBack, onPlayerUpdate,
                       {compatibleCrystals.length === 0 ? (
                         <p className="text-gray-500 text-sm">No tenés cristales compatibles</p>
                       ) : compatibleCrystals.map(crystal => {
-                        const passiveId = crystal.item?.stats?.preset_passive ?? ''
+                        const passiveId = ((crystal.item?.stats) as any)?.preset_passive ?? ''
                         const label = PASSIVE_LABELS[passiveId]
                         const isSelected = selectedCrystalId === crystal.id
                         return (

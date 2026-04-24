@@ -1,4 +1,5 @@
 'use client'
+import BgImage from '../../../hub/BgImage'
 
 import { useRef, useEffect, useState } from 'react'
 import { Player, Dungeon, Boss, Enemy, CombatAction, PlayerSkill, EnemyCombatState, RunState } from '@/types/game'
@@ -71,8 +72,7 @@ function FloatingDamage({ value, isCrit, isPlayer }: { value: number; isCrit: bo
       style={{
         animation: 'floatUp 0.9s ease-out forwards',
         top: '-10px',
-        textShadow: '0 2px 4px rgba(0,0,0,0.8)',
-      }}
+        textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}
     >
       {isCrit && '⚡'}-{value}
     </div>
@@ -292,10 +292,8 @@ export function CombatScreen({
         : null
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{
-      backgroundImage: `url(/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'})`,
-      backgroundSize: 'cover', backgroundPosition: 'center',
-    }}>
+    <div className="min-h-screen flex items-center justify-center" style={{}}>
+      <BgImage src={`/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'}`} />
 
       {/* Zona izquierda — sprites enemigos */}
       <div className="flex-1 flex items-center justify-center p-4">

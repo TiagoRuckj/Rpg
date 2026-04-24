@@ -1,4 +1,5 @@
 'use client'
+import BgImage from '../../../hub/BgImage'
 
 import { Player, Dungeon, Boss, RunState } from '@/types/game'
 
@@ -17,10 +18,8 @@ export function ResultsScreen({
   dungeon, boss, run, bossDrops, isSaving, onContinue, onReturnToHub,
 }: ResultsScreenProps) {
   return (
-    <div className="min-h-screen flex justify-center" style={{
-      backgroundImage: `url(/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'})`,
-      backgroundSize: 'cover', backgroundPosition: 'center',
-    }}>
+    <div className="min-h-screen flex justify-center" style={{}}>
+      <BgImage src={`/sprites/backgrounds/${dungeon.background || 'Goblin_cave_bg.jpg'}`} />
       <div className="w-full min-h-screen text-white p-4 flex flex-col gap-4 max-w-2xl" style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}>
 
         <div className="text-center py-4">

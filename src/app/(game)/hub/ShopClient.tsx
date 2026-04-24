@@ -1,4 +1,5 @@
 'use client'
+import BgImage from './BgImage'
 
 import { useState } from 'react'
 import { Player, Item, InventoryEntry } from '@/types/game'
@@ -27,8 +28,6 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
 
   const [buyCart, setBuyCart] = useState<Record<number, number>>({})
   const [sellCart, setSellCart] = useState<Record<number, number>>({})
-
-
 
   // ── Carrito de compra ───────────────────────────────────────────────────────
   function addToBuyCart(item: Item) {
@@ -135,7 +134,8 @@ export default function ShopClient({ player, shopItems, inventory: initialInvent
   }
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden text-white" style={{ backgroundImage: 'url(/sprites/backgrounds/hub_background.png)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className="h-screen flex flex-col overflow-hidden text-white" style={{}}>
+      <BgImage src="/sprites/backgrounds/hub_background.png" />
       <div className="w-full h-screen flex flex-col max-w-2xl mx-auto overflow-hidden">
 
         {/* Header */}

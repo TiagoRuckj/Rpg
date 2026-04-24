@@ -1,4 +1,5 @@
 'use client'
+import BgImage from './BgImage'
 
 import { useState, useEffect } from 'react'
 import { Player, PlayerProficiencies, AchievementBonus } from '@/types/game'
@@ -129,7 +130,8 @@ export default function AchievementsClient({ player, onBack }: Props) {
   const grouped = groupByMetric(achievements)
 
   return (
-    <div className="h-screen flex justify-center overflow-hidden" style={{ backgroundImage: 'url(/sprites/backgrounds/achievements_bg.png)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className="h-screen flex justify-center overflow-hidden" style={{}}>
+      <BgImage src="/sprites/backgrounds/achievements_bg.png" />
       <div className="w-full h-full text-white max-w-2xl flex flex-col overflow-hidden bg-black/60">
 
         {/* Header */}
@@ -151,7 +153,7 @@ export default function AchievementsClient({ player, onBack }: Props) {
               {achievementBonus.crit_mult > 0 && <span className="text-yellow-300">+{(achievementBonus.crit_mult * 100).toFixed(0)}% crit dmg</span>}
               {achievementBonus.gold_pct > 0  && <span className="text-yellow-300">+{(achievementBonus.gold_pct * 100).toFixed(0)}% gold</span>}
               {Object.entries(achievementBonus.type_damage ?? {}).map(([type, bonus]) => (
-                <span key={type} className="text-purple-300">+{(bonus * 100).toFixed(0)}% vs {type}</span>
+                <span key={type} className="text-purple-300">+{((bonus ?? 0) * 100).toFixed(0)}% vs {type}</span>
               ))}
             </div>
           </div>

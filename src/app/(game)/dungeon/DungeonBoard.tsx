@@ -1,4 +1,5 @@
 'use client'
+import BgImage from '../hub/BgImage'
 
 import { useState, useMemo } from 'react'
 import { Dungeon, Enemy, Boss } from '@/types/game'
@@ -10,6 +11,8 @@ interface Props {
   dungeons: Dungeon[]
   enemiesByDungeon: Record<number, Enemy[]>
   bossByDungeon: Record<number, Boss>
+  onBack?: () => void
+  onEnterDungeon?: (data: import('@/stores/gameNavStore').CombatData) => void
 }
 
 const rankColors: Record<string, { border: string; text: string; glow: string }> = {
@@ -66,7 +69,7 @@ function generatePositions(dungeons: { id: number }[]): { x: number; y: number; 
   return positions
 }
 
-export default function DungeonBoard({ dungeons, enemiesByDungeon, bossByDungeon }: Props) {
+export default function DungeonBoard({ dungeons, enemiesByDungeon, bossByDungeon, onBack, onEnterDungeon }: Props) {
   const router = useRouter()
   const [entering, setEntering] = useState<number | null>(null)
   const positions = useMemo(() => generatePositions(dungeons), [dungeons])
@@ -74,27 +77,48 @@ export default function DungeonBoard({ dungeons, enemiesByDungeon, bossByDungeon
   async function handleEnter(dungeonId: number) {
     setEntering(dungeonId)
     await startRunAction(dungeonId)
-    router.replace(`/dungeon/${dungeonId}`)
+    if (onEnterDungeon) {
+      // Modo SPA: fetch de datos del dungeon en cliente y transición sin navegación
+      const res = await fetch(`/api/dungeon/${dungeonId}/combat-data`)
+      if (res.ok) {
+        const data = await res.json()
+        onEnterDungeon(data)
+      } else {
+        // Fallback a navegación tradicional
+        router.replace(`/dungeon/${dungeonId}`)
+      }
+    } else {
+      router.replace(`/dungeon/${dungeonId}`)
+    }
   }
 
   return (
     <div
       className="h-screen text-white flex flex-col overflow-hidden"
-      style={{
-        backgroundImage: 'url(/sprites/backgrounds/dungeonboard_background.png)',
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-      }}
-    >
+      
+     style={{}}>
+      <BgImage src="/sprites/backgrounds/dungeonboard_background.png" />
+      <style>{`
+        @keyframes cardSettle {
+          0%   { transform: rotate(var(--card-rotate));                                    animation-timing-function: cubic-bezier(0.4, 0, 1, 1); }
+          48%  { transform: rotate(calc(var(--card-rotate) + var(--card-swing)));          animation-timing-function: cubic-bezier(0, 0, 0.3, 1); }
+          65%  { transform: rotate(calc(var(--card-rotate) - calc(var(--card-swing) * 0.45))); animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+          78%  { transform: rotate(calc(var(--card-rotate) + calc(var(--card-swing) * 0.18))); animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+          88%  { transform: rotate(calc(var(--card-rotate) - calc(var(--card-swing) * 0.06))); animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+          100% { transform: rotate(var(--card-rotate)); }
+        }
+      `}</style>
       {/* Header */}
       <div
         className="flex items-center gap-4 px-6 py-3 border-b-4 border-yellow-900 shrink-0"
         style={{ background: 'rgba(20,10,5,0.88)', boxShadow: '0 4px 0 #000' }}
       >
         <button
-          onClick={() => router.replace('/hub')}
-          className="text-yellow-700 hover:text-yellow-400 transition text-sm"
-          style={MONO}
+          onClick={() => onBack ? onBack() : router.replace('/hub')}
+          className="font-bold text-sm transition-all"
+          style={{ ...MONO, border: '3px solid #4a3000', background: 'rgba(40,20,0,0.80)', color: '#c8860a', padding: '4px 14px', boxShadow: '3px 3px 0 #000', textShadow: '1px 1px 0 #000' }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = '#c8860a'; e.currentTarget.style.color = '#ffd700'; e.currentTarget.style.boxShadow = '3px 3px 0 #000, 0 0 8px #c8860a88' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = '#4a3000'; e.currentTarget.style.color = '#c8860a'; e.currentTarget.style.boxShadow = '3px 3px 0 #000' }}
         >
           ◀ Volver
         </button>
@@ -131,14 +155,20 @@ export default function DungeonBoard({ dungeons, enemiesByDungeon, bossByDungeon
                   transform: `rotate(${pos.rotate}deg)`,
                   zIndex: 10,
                   transformOrigin: 'top center',
-                }}
+                  animationName: 'cardSettle',
+                  animationDuration: `${880 + (dungeon.id % 4) * 40}ms`,
+                  animationTimingFunction: 'linear',
+                  animationFillMode: 'both',
+                  animationDelay: '0ms',
+                  '--card-rotate': `${pos.rotate}deg`,
+                  // Swing = tirón de inercia al caer, alterno por carta para variedad
+                  '--card-swing': `${(dungeon.id % 2 === 0 ? 1 : -1) * (12 + (dungeon.id % 3) * 5)}deg`,
+                } as React.CSSProperties}
                 onMouseEnter={e => { e.currentTarget.style.zIndex = '20' }}
                 onMouseLeave={e => { e.currentTarget.style.zIndex = '10' }}
               >
                 <DungeonCard
                   dungeon={dungeon}
-                  enemies={enemiesByDungeon[dungeon.id] ?? []}
-                  boss={bossByDungeon[dungeon.id] ?? null}
                   entering={entering === dungeon.id}
                   onEnter={() => handleEnter(dungeon.id)}
                 />
@@ -151,14 +181,11 @@ export default function DungeonBoard({ dungeons, enemiesByDungeon, bossByDungeon
   )
 }
 
-function DungeonCard({ dungeon, enemies, boss, onEnter, entering }: {
+function DungeonCard({ dungeon, onEnter, entering }: {
   dungeon: Dungeon
-  enemies: Enemy[]
-  boss: Boss | null
   onEnter: () => void
   entering: boolean
 }) {
-  const [showInfo, setShowInfo] = useState(false)
   const rank = rankColors[dungeon.rank] ?? { border: '#fff', text: '#fff', glow: 'rgba(255,255,255,0.2)' }
 
   return (
@@ -170,7 +197,7 @@ function DungeonCard({ dungeon, enemies, boss, onEnter, entering }: {
           border: '4px solid #7a5a2a',
           boxShadow: '4px 4px 0 #000, inset 0 1px 0 rgba(255,240,180,0.4), inset 0 -1px 0 rgba(0,0,0,0.2)',
           padding: '14px 16px 12px',
-          height: `${CARD_H}px`,
+          width: `${CARD_W}px`
         }}
         onMouseEnter={e => {
           const el = e.currentTarget
@@ -184,8 +211,8 @@ function DungeonCard({ dungeon, enemies, boss, onEnter, entering }: {
         }}
       >
         {/* Líneas de papel decorativas */}
-        <div className="absolute inset-x-4 top-10 flex flex-col gap-3 pointer-events-none opacity-20">
-          {[...Array(8)].map((_, i) => (
+        <div className="absolute inset-x-4 inset-y-10 flex flex-col justify-around pointer-events-none opacity-15">
+          {[...Array(10)].map((_, i) => (
             <div key={i} className="w-full h-px" style={{ background: '#7a5a2a' }} />
           ))}
         </div>
@@ -205,13 +232,13 @@ function DungeonCard({ dungeon, enemies, boss, onEnter, entering }: {
               borderColor: rank.border,
               background: 'rgba(0,0,0,0.65)',
               boxShadow: `1px 1px 0 #000, 0 0 4px ${rank.glow}`,
-              textShadow: '1px 1px 0 #000',
+              textShadow: '1px 1px 0 #000'
             }}
           >
             {dungeon.rank}
           </span>
           <h2
-            className="font-bold text-xs uppercase tracking-wide truncate"
+            className="font-bold text-xs uppercase tracking-wide leading-tight"
             style={{ ...MONO, color: '#2a1500', textShadow: '0 1px 0 rgba(255,220,150,0.5)' }}
           >
             {dungeon.name}
@@ -226,7 +253,7 @@ function DungeonCard({ dungeon, enemies, boss, onEnter, entering }: {
         </div>
 
         {/* Descripción */}
-        <p className="text-xs relative z-10 leading-relaxed flex-1" style={{ ...MONO, color: '#3a2000' }}>
+        <p className="text-xs relative z-10 leading-relaxed" style={{ ...MONO, color: '#3a2000' }}>
           {dungeon.description}
         </p>
 
@@ -248,7 +275,7 @@ function DungeonCard({ dungeon, enemies, boss, onEnter, entering }: {
               boxShadow: entering ? 'none' : '4px 4px 0 #000',
               color: entering ? '#888' : '#ffd700',
               textShadow: '1px 1px 0 #000',
-              cursor: entering ? 'not-allowed' : 'pointer',
+              cursor: entering ? 'not-allowed' : 'pointer'
             }}
             onMouseEnter={e => {
               if (entering) return
@@ -267,125 +294,10 @@ function DungeonCard({ dungeon, enemies, boss, onEnter, entering }: {
           >
             {entering ? 'Entrando...' : '▶ Aceptar'}
           </button>
-          <button
-            onClick={() => setShowInfo(true)}
-            className="font-bold px-2 py-1.5 text-xs transition-all"
-            style={{
-              ...MONO,
-              background: 'rgba(60,35,5,0.7)',
-              border: '4px solid #4a3000',
-              boxShadow: '4px 4px 0 #000',
-              color: '#c8860a',
-            }}
-            onMouseEnter={e => {
-              const el = e.currentTarget
-              el.style.background = 'rgba(100,60,5,0.85)'
-              el.style.borderColor = '#8B6914'
-            }}
-            onMouseLeave={e => {
-              const el = e.currentTarget
-              el.style.background = 'rgba(60,35,5,0.7)'
-              el.style.borderColor = '#4a3000'
-            }}
-            title="Ver enemigos y loot"
-          >
-            📋
-          </button>
+
         </div>
       </div>
 
-      {/* Modal */}
-      {showInfo && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-4" onClick={() => setShowInfo(false)}>
-          <div className="absolute inset-0 bg-black/75" />
-          <div
-            className="relative w-full max-w-lg flex flex-col overflow-hidden max-h-[80vh]"
-            style={{
-              background: 'rgba(15,8,3,0.97)',
-              border: `4px solid ${rank.border}`,
-              boxShadow: `4px 4px 0 #000, 0 0 20px ${rank.glow}`,
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between p-4 border-b-4 shrink-0"
-              style={{ borderColor: rank.border }}
-            >
-              <div>
-                <h2 className="font-bold text-yellow-200 uppercase tracking-wide" style={{ ...MONO, textShadow: '2px 2px 0 #000' }}>{dungeon.name}</h2>
-                <p className="text-amber-700 text-xs mt-0.5" style={MONO}>{dungeon.rooms} salas · Rank {dungeon.rank}</p>
-              </div>
-              <button onClick={() => setShowInfo(false)} className="text-yellow-700 hover:text-yellow-400 text-xl transition" style={MONO}>✕</button>
-            </div>
-
-            <div className="overflow-y-auto flex flex-col [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
-              {enemies.length > 0 && (
-                <div className="p-4 flex flex-col gap-3">
-                  <h3 className="text-xs font-bold text-amber-600 uppercase tracking-wider" style={MONO}>Enemigos</h3>
-                  {enemies.map(enemy => (
-                    <div key={enemy.id} className="p-3 flex flex-col gap-2"
-                      style={{ background: 'rgba(0,0,0,0.4)', border: '2px solid #4a3000', boxShadow: '2px 2px 0 #000' }}
-                    >
-                      <div className="flex justify-between items-center">
-                        <span className="font-bold text-yellow-200 text-sm" style={MONO}>{enemy.name}</span>
-                        <div className="flex gap-3 text-xs text-amber-600" style={MONO}>
-                          <span>❤ {enemy.stats.hp}</span>
-                          <span>⚔ {enemy.stats.attack}</span>
-                          <span>🛡 {enemy.stats.defense}</span>
-                        </div>
-                      </div>
-                      {enemy.loot_table?.filter(l => l.item_id).map((loot, i) => (
-                        <div key={i} className="flex items-center gap-2 px-3 py-1.5"
-                          style={{ background: 'rgba(0,0,0,0.3)', border: '2px solid #2a1800' }}
-                        >
-                          {(loot as any).item_sprite
-                            ? <img src={`/sprites/items/${(loot as any).item_sprite}`} alt="" className="w-6 h-6 object-contain shrink-0" style={{ imageRendering: 'pixelated' }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                            : <span className="text-sm">🎁</span>}
-                          <span className="text-amber-300 text-xs flex-1" style={MONO}>{(loot as any).item_name ?? `Item #${loot.item_id}`}</span>
-                          <span className="text-yellow-400 text-xs font-bold" style={MONO}>{Math.round(loot.item_chance * 100)}%</span>
-                        </div>
-                      ))}
-                      {!enemy.loot_table?.some(l => l.item_id) && (
-                        <p className="text-amber-900 text-xs" style={MONO}>Sin drops de items</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {boss && (
-                <div className="p-4 border-t-4 border-red-900 flex flex-col gap-3">
-                  <h3 className="text-xs font-bold text-red-500 uppercase tracking-wider" style={MONO}>⚠ Boss</h3>
-                  <div className="p-3 flex flex-col gap-2"
-                    style={{ background: 'rgba(40,0,0,0.5)', border: '2px solid #7a0000', boxShadow: '2px 2px 0 #000' }}
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="font-bold text-red-300 text-sm" style={MONO}>{boss.name}</span>
-                      <div className="flex gap-3 text-xs text-red-400" style={MONO}>
-                        <span>❤ {boss.stats.hp}</span>
-                        <span>⚔ {boss.stats.attack}</span>
-                        <span>🛡 {boss.stats.defense}</span>
-                      </div>
-                    </div>
-                    {boss.loot_table?.filter(l => l.item_id).map((loot, i) => (
-                      <div key={i} className="flex items-center gap-2 px-3 py-1.5"
-                        style={{ background: 'rgba(0,0,0,0.3)', border: '2px solid #3a0000' }}
-                      >
-                        {(loot as any).item_sprite
-                          ? <img src={`/sprites/items/${(loot as any).item_sprite}`} alt="" className="w-6 h-6 object-contain shrink-0" style={{ imageRendering: 'pixelated' }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                          : <span className="text-sm">🎁</span>}
-                        <span className="text-red-200 text-xs flex-1" style={MONO}>{(loot as any).item_name ?? `Item #${loot.item_id}`}</span>
-                        <span className="text-yellow-400 text-xs font-bold" style={MONO}>{Math.round(loot.chance * 100)}%</span>
-                      </div>
-                    ))}
-                    {!boss.loot_table?.some(l => l.item_id) && (
-                      <p className="text-red-900 text-xs" style={MONO}>Sin drops de items</p>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </>
   )
 }

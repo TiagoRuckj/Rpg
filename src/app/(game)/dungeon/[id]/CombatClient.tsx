@@ -35,11 +35,13 @@ interface Props {
   enemies: Enemy[]
   aiConfigs: EnemyAiConfig[]
   eventBosses: Boss[]
+  onBack?: () => void
+  onBackToDungeonBoard?: () => void
 }
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 
-export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs, eventBosses }: Props) {
+export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs, eventBosses, onBack, onBackToDungeonBoard }: Props) {
   const router = useRouter()
   const logRef = useRef<HTMLDivElement>(null)
 
@@ -47,7 +49,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
   const [showSkills, setShowSkills] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [activeEventBoss, setActiveEventBoss] = useState<Boss | null>(
-    eventBosses.find(b => b.name === 'Gran Goblin') ?? null
+    (eventBosses ?? []).find(b => b.name === 'Gran Goblin') ?? null
   )
   const [fightingEvent, setFightingEvent] = useState(false)
   const aiDebugAccRef = useRef<AiDebugEntry[]>([])
@@ -122,7 +124,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
   )
 
   const depthMult = depthMultiplier(run.depth)
-  const isTraining = boss.stats.attack === 0 && boss.loot_table.length === 0
+  const isTraining = (boss?.stats?.attack === 0) && ((boss?.loot_table?.length ?? 0) === 0)
 
   const handleActionRef = useRef<(action: CombatAction, skill?: PlayerSkill, item?: any) => Promise<void>>(async () => {})
 
@@ -607,7 +609,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
   }
 
   // ─── Helper: resolver victoria/derrota ───────────────────────────────────
-  function resolveOutcome(allDefeated: boolean, playerDef: boolean, newHP: number) {
+  function resolveOutcome(allDefeated: boolean, playerDef: boolean, newHP: number, ptResult?: import('@/actions/combatActions').PlayerTurnResult) {
     if (allDefeated) {
       // Gran Goblin (evento especial)
       if (fightingEvent && activeEventBoss) {
@@ -663,9 +665,9 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
       setStatus('victory')
       registerKillAction({
         enemyTypes: boss.enemy_type ?? [],
-        weaponType: ptResult.isMagicAction ? undefined : ptResult.weaponType,
-        isMagicKill: ptResult.isMagicAction,
-        biggestDamage: ptResult.maxDamageDealt,
+        weaponType: ptResult?.isMagicAction ? undefined : ptResult?.weaponType,
+        isMagicKill: ptResult?.isMagicAction,
+        biggestDamage: ptResult?.maxDamageDealt,
         isGoblinKing: boss.name.toLowerCase().includes('rey goblin'),
         isGranGoblin: boss.name.toLowerCase().includes('gran goblin'),
       })
@@ -718,7 +720,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     setIsSaving(true)
     setVictoryModal(null)
     await clearRunAction(playerHP)
-    router.replace('/hub')
+    onBack ? onBack() : router.replace('/hub')
   }
 
   async function handleBossAction(action: CombatAction, skill?: PlayerSkill, itemUsed?: ItemUsed) {
@@ -854,7 +856,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
 
       nextTurn()
       setCombatPhase('idle')
-      resolveOutcome(true, false, efResult.newPlayerHP)
+      resolveOutcome(true, false, efResult.newPlayerHP, ptResult)
       return
     }
 
@@ -1000,7 +1002,7 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
     const allDefeated = enemiesAfterPlayer.every(e =>
       (efResult.updatedEnemyHPs[e.instanceId] ?? etResult.updatedEnemyHPs[e.instanceId] ?? e.currentHP) <= 0
     )
-    resolveOutcome(allDefeated, etResult.playerDefeated || efResult.playerDefeated, efResult.newPlayerHP)
+    resolveOutcome(allDefeated, etResult.playerDefeated || efResult.playerDefeated, efResult.newPlayerHP, ptResult)
   }
 
   // ─── Items — ver hooks/useItemHandlers.ts ─────────────────────────────────
@@ -1015,13 +1017,13 @@ export default function CombatClient({ player, dungeon, boss, enemies, aiConfigs
   } = items
 
   async function handleReturnToHub() {
-    await clearRunAction(playerHP); router.replace('/hub')
+    await clearRunAction(playerHP); onBack ? onBack() : router.replace('/hub')
   }
 
   async function handleExitDungeon() {
     setIsSaving(true)
     await saveRunAction({ outcome: 'extracted', exp: run.accumulatedLoot.exp, gold: run.accumulatedLoot.gold, items: run.accumulatedLoot.items, currentHP: playerHP, proficiencyUpdates })
-    await clearRunAction(playerHP); router.replace('/hub')
+    await clearRunAction(playerHP); onBack ? onBack() : router.replace('/hub')
   }
 
   // ─── Pantallas ────────────────────────────────────────────────────────────

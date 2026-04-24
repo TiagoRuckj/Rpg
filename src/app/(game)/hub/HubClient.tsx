@@ -1,6 +1,7 @@
 'use client'
+import BgImage from './BgImage'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Player, InventoryEntry, deriveStatsWithGearAndClasses, calcClassBonuses, calcPlayerLevel, GameClass, EquippedGear, EMPTY_GEAR, calcUpgradeBonus } from '@/types/game'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -15,6 +16,45 @@ import SmithClient from './SmithClient'
 import AchievementsClient from './AchievementsClient'
 import { useToast, ToastContainer } from './Toast'
 import { MONO, pixelCard, pixelCardBase, pixelCardHover, pixelDungeonBtn, pixelDungeonBtnBase, pixelDungeonBtnHover } from './pixelStyles'
+
+
+// ─── Animación de entrada/salida para sub-vistas ──────────────────────────────
+
+function SubView({ children, closing, onClosed }: {
+  children: React.ReactNode
+  closing: boolean
+  onClosed: () => void
+}) {
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 100, overflow: 'hidden',
+        borderBottom: '4px solid #4a3000',
+        boxShadow: '0 4px 0 #000',
+        animation: closing
+          ? 'subViewUp 0.28s cubic-bezier(0.4, 0, 1, 1) forwards'
+          : 'subViewDown 650ms cubic-bezier(0.215, 0.61, 0.355, 1) forwards',
+      }}
+      onAnimationEnd={() => { if (closing) onClosed() }}
+    >
+      <style>{`
+        @keyframes subViewDown {
+          0%        { transform: translateY(-100%); animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45); }
+          48%       { transform: translateY(0%);    animation-timing-function: cubic-bezier(0, 0, 0.2, 1); }
+          65%       { transform: translateY(-6%);   animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45); }
+          79%       { transform: translateY(0%);    animation-timing-function: cubic-bezier(0, 0, 0.2, 1); }
+          89%       { transform: translateY(-2%);   animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45); }
+          100%      { transform: translateY(0%); }
+        }
+        @keyframes subViewUp {
+          from { transform: translateY(0%); }
+          to   { transform: translateY(-100%); }
+        }
+      `}</style>
+      {children}
+    </div>
+  )
+}
 
 type ClassData = {
   id: string
@@ -34,6 +74,7 @@ interface Props {
   inventory: InventoryEntry[]
   shopItems: import('@/types/game').Item[]
   unlockedClasses: ClassData[]
+  onGoToDungeon?: () => void
 }
 
 type View = 'hub' | 'stats' | 'shop' | 'inventory' | 'classes' | 'blacksmith' | 'skills' | 'achievements'
@@ -61,10 +102,14 @@ function getEquippedGear(inventory: InventoryEntry[]): EquippedGear {
   return gear
 }
 
-export default function HubClient({ player, inventory: initialInventory, shopItems, unlockedClasses }: Props) {
+export default function HubClient({ player, inventory: initialInventory, shopItems, unlockedClasses, onGoToDungeon }: Props) {
   const router = useRouter()
   const supabase = createClient()
   const [view, setView] = useState<View>('hub')
+  const [closing, setClosing] = useState(false)
+
+  function goBack() { setClosing(true) }
+  function handleClosed() { setClosing(false); setView('hub') }
   const [currentPlayer, setCurrentPlayer] = useState(player)
   const [inventory, setInventory] = useState(initialInventory)
   const [equippedSkills, setEquippedSkills] = useState<string[]>(player.equipped_skills ?? [])
@@ -86,101 +131,6 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
   async function handleLogout() {
     await supabase.auth.signOut()
     router.replace('/login')
-  }
-
-  if (view === 'inventory') {
-    return (
-      <InventoryClient
-        player={currentPlayer}
-        inventory={inventory}
-        onBack={() => setView('hub')}
-        onInventoryUpdate={(updatedInventory) => {
-          setInventory(updatedInventory)
-          // Si el max HP bajó por desequipar gear, capear el HP actual
-          const updatedGear = getEquippedGear(updatedInventory)
-          const equippedClassData = unlockedClasses.filter(c => equippedClassIds.includes(c.id)) as GameClass[]
-          const updatedClassBonuses = calcClassBonuses(equippedClassIds, equippedClassData)
-          const newMaxHP = deriveStatsWithGearAndClasses(currentPlayer.primary_stats, updatedGear, updatedClassBonuses).max_hp
-          const currentHPNow = (currentPlayer as any).current_hp ?? newMaxHP
-          if (currentHPNow > newMaxHP) {
-            const supabase = createClient()
-            supabase.from('players').update({ current_hp: newMaxHP }).eq('id', currentPlayer.id)
-            setCurrentPlayer(p => ({ ...p, current_hp: newMaxHP }))
-          }
-        }}
-      />
-    )
-  }
-
-  if (view === 'shop') {
-    return (
-      <ShopClient
-        player={currentPlayer}
-        shopItems={shopItems}
-        inventory={inventory}
-        onBack={() => setView('hub')}
-        onPlayerUpdate={(updatedPlayer, updatedInventory) => {
-          setCurrentPlayer(updatedPlayer)
-          setInventory(updatedInventory)
-        }}
-      />
-    )
-  }
-
-  if (view === 'stats') {
-    return (
-      <StatsClient
-        player={currentPlayer}
-        onBack={() => setView('hub')}
-        onPlayerUpdate={(updated) => setCurrentPlayer(updated)}
-      />
-    )
-  }
-
-  if (view === 'blacksmith') {
-    return (
-      <SmithClient
-        player={currentPlayer}
-        inventory={inventory}
-        onBack={() => setView('hub')}
-        onPlayerUpdate={p => setCurrentPlayer(p)}
-        onInventoryUpdate={inv => setInventory(inv)}
-      />
-    )
-  }
-
-  if (view === 'achievements') {
-    return (
-      <AchievementsClient
-        player={currentPlayer}
-        onBack={() => setView('hub')}
-      />
-    )
-  }
-
-  if (view === 'classes') {
-    return (
-      <ClassesClient
-        unlockedClasses={unlockedClasses}
-        equippedClasses={equippedClassIds}
-        playerId={currentPlayer.id}
-        onBack={() => setView('hub')}
-        onEquippedClassesChange={setEquippedClassIds}
-      />
-    )
-  }
-
-  if (view === 'skills') {
-    return (
-      <SkillsClient
-        player={currentPlayer}
-        onBack={() => setView('hub')}
-        onPlayerUpdate={(updated) => {
-          setCurrentPlayer(updated)
-          setEquippedSkills(updated.equipped_skills ?? [])
-        }}
-      />
-    )
   }
 
   const gear = getEquippedGear(inventory)
@@ -317,11 +267,26 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
 
           {/* Dungeons */}
           <button
-            onClick={() => router.replace('/dungeon')}
+            onClick={() => onGoToDungeon ? onGoToDungeon() : router.replace('/dungeon')}
             className="w-full text-left transition-all duration-150 group"
-            style={pixelDungeonBtn}
-            onMouseEnter={e => Object.assign(e.currentTarget.style, pixelDungeonBtnHover)}
-            onMouseLeave={e => Object.assign(e.currentTarget.style, pixelDungeonBtnBase)}
+            style={{
+              background: 'rgba(120,80,0,0.75)',
+              border: '4px solid #8B6914',
+              boxShadow: '4px 4px 0 #000, inset 0 0 0 2px rgba(255,200,0,0.15)',
+              padding: '16px 20px',
+            }}
+            onMouseEnter={e => {
+              const el = e.currentTarget
+              el.style.background = 'rgba(180,120,0,0.85)'
+              el.style.borderColor = '#f0b030'
+              el.style.boxShadow = '4px 4px 0 #000, inset 0 0 16px rgba(255,200,0,0.30), 0 0 12px rgba(255,180,0,0.4)'
+            }}
+            onMouseLeave={e => {
+              const el = e.currentTarget
+              el.style.background = 'rgba(120,80,0,0.75)'
+              el.style.borderColor = '#8B6914'
+              el.style.boxShadow = '4px 4px 0 #000, inset 0 0 0 2px rgba(255,200,0,0.15)'
+            }}
           >
             <div className="flex justify-between items-center">
               <div>
@@ -335,7 +300,7 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
           {/* Grid botones */}
           <div className="grid grid-cols-3 gap-3">
             <HubMenuCard icon="📊" title="Stats" sub={`${currentPlayer.experience} EXP disponible`} onClick={() => setView('stats')} />
-            <HubMenuCard icon="⚔️" title="Clases" sub={`${unlockedClasses.length} desbloqueada${unlockedClasses.length !== 1 ? 's' : ''}`} onClick={() => setView('classes')} />
+            <HubMenuCard icon="🏅" title="Títulos" sub={`${unlockedClasses.length} desbloqueado${unlockedClasses.length !== 1 ? 's' : ''}`} onClick={() => setView('classes')} />
             <HubMenuCard icon="🎒" title="Inventario" sub="Equipo y objetos" onClick={() => setView('inventory')} />
             <HubMenuCard icon="✨" title="Habilidades" sub={`${equippedSkills.length} equipadas`} onClick={() => setView('skills')} />
             <HubMenuCard icon="🏪" title="Tienda" sub={`${currentPlayer.gold} gold disponible`} onClick={() => setView('shop')} />
@@ -346,6 +311,84 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
         </div>
       </div>
       <ToastContainer toasts={toasts} />
+      {/* Sub-vistas — encima del hub sin desmontarlo */}
+      {view !== 'hub' && (
+        <SubView closing={closing} onClosed={handleClosed}>
+          {view === 'inventory' && (
+            <InventoryClient
+              player={currentPlayer}
+              inventory={inventory}
+              onBack={goBack}
+              onInventoryUpdate={(updatedInventory) => {
+                setInventory(updatedInventory)
+                const updatedGear = getEquippedGear(updatedInventory)
+                const equippedClassData = unlockedClasses.filter(c => equippedClassIds.includes(c.id)) as GameClass[]
+                const updatedClassBonuses = calcClassBonuses(equippedClassIds, equippedClassData)
+                const newMaxHP = deriveStatsWithGearAndClasses(currentPlayer.primary_stats, updatedGear, updatedClassBonuses).max_hp
+                const currentHPNow = (currentPlayer as any).current_hp ?? newMaxHP
+                if (currentHPNow > newMaxHP) {
+                  const supabase = createClient()
+                  supabase.from('players').update({ current_hp: newMaxHP }).eq('id', currentPlayer.id)
+                  setCurrentPlayer((p: any) => ({ ...p, current_hp: newMaxHP }))
+                }
+              }}
+            />
+          )}
+          {view === 'shop' && (
+            <ShopClient
+              player={currentPlayer}
+              shopItems={shopItems}
+              inventory={inventory}
+              onBack={goBack}
+              onPlayerUpdate={(updatedPlayer, updatedInventory) => {
+                setCurrentPlayer(updatedPlayer)
+                setInventory(updatedInventory)
+              }}
+            />
+          )}
+          {view === 'stats' && (
+            <StatsClient
+              player={currentPlayer}
+              onBack={goBack}
+              onPlayerUpdate={(updated) => setCurrentPlayer(updated)}
+            />
+          )}
+          {view === 'blacksmith' && (
+            <SmithClient
+              player={currentPlayer}
+              inventory={inventory}
+              onBack={goBack}
+              onPlayerUpdate={(p) => setCurrentPlayer(p)}
+              onInventoryUpdate={(inv) => setInventory(inv)}
+            />
+          )}
+          {view === 'achievements' && (
+            <AchievementsClient
+              player={currentPlayer}
+              onBack={goBack}
+            />
+          )}
+          {view === 'classes' && (
+            <ClassesClient
+              unlockedClasses={unlockedClasses}
+              equippedClasses={equippedClassIds}
+              playerId={currentPlayer.id}
+              onBack={goBack}
+              onEquippedClassesChange={setEquippedClassIds}
+            />
+          )}
+          {view === 'skills' && (
+            <SkillsClient
+              player={currentPlayer}
+              onBack={goBack}
+              onPlayerUpdate={(updated) => {
+                setCurrentPlayer(updated)
+                setEquippedSkills(updated.equipped_skills ?? [])
+              }}
+            />
+          )}
+        </SubView>
+      )}
     </div>
   )
 }
@@ -357,9 +400,24 @@ function HubMenuCard({ icon, title, sub, onClick }: {
     <button
       onClick={onClick}
       className="text-left transition-all duration-150 group w-full"
-      style={pixelCard}
-      onMouseEnter={e => Object.assign(e.currentTarget.style, pixelCardHover)}
-      onMouseLeave={e => Object.assign(e.currentTarget.style, pixelCardBase)}
+      style={{
+        background: 'rgba(20,15,5,0.78)',
+        border: '4px solid #4a3000',
+        boxShadow: '4px 4px 0 #000, inset 0 0 0 1px rgba(255,180,0,0.08)',
+        padding: '14px 16px',
+      }}
+      onMouseEnter={e => {
+        const el = e.currentTarget
+        el.style.background = 'rgba(80,50,5,0.90)'
+        el.style.borderColor = '#c8860a'
+        el.style.boxShadow = '4px 4px 0 #000, inset 0 0 12px rgba(255,180,0,0.25), 0 0 8px rgba(255,160,0,0.3)'
+      }}
+      onMouseLeave={e => {
+        const el = e.currentTarget
+        el.style.background = 'rgba(20,15,5,0.78)'
+        el.style.borderColor = '#4a3000'
+        el.style.boxShadow = '4px 4px 0 #000, inset 0 0 0 1px rgba(255,180,0,0.08)'
+      }}
     >
       <span className="text-2xl">{icon}</span>
       <h3 className="font-bold text-yellow-200 mt-2 uppercase tracking-wide text-sm" style={{ fontFamily: 'monospace', textShadow: '1px 1px 0 #000' }}>{title}</h3>

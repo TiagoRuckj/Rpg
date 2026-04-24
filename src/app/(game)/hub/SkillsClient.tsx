@@ -1,4 +1,5 @@
 'use client'
+import BgImage from './BgImage'
 
 import { useState } from 'react'
 import { Player, PlayerSkill } from '@/types/game'
@@ -70,7 +71,8 @@ export default function SkillsClient({ player, onBack, onPlayerUpdate }: Props) 
   const hasChanges = JSON.stringify(equippedSkills.sort()) !== JSON.stringify((player.equipped_skills ?? []).sort())
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden text-white" style={{ backgroundImage: 'url(/sprites/backgrounds/hub_background.png)', backgroundSize: 'cover', backgroundPosition: 'center' }}>
+    <div className="h-screen flex flex-col overflow-hidden text-white" style={{}}>
+      <BgImage src="/sprites/backgrounds/hub_background.png" />
       <div className="w-full h-screen flex flex-col max-w-3xl mx-auto overflow-hidden">
 
         {/* Header */}
