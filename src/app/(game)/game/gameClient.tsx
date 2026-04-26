@@ -36,142 +36,264 @@ function FadeOverlay({ visible }: { visible: boolean }) {
 
 // ─── Pantalla de auth ─────────────────────────────────────────────────────────
 
-function AuthScreen() {
+// ─── Estilos compartidos del auth ────────────────────────────────────────────
+
+const A = {
+  border:      '#4a3000',
+  borderGold:  '#c8860a',
+  borderRed:   '#7f1d1d',
+  bg:          'rgba(10,5,2,0.97)',
+  bgInput:     'rgba(0,0,0,0.60)',
+  bgBtn:       'rgba(100,65,0,0.85)',
+  bgErr:       'rgba(120,0,0,0.30)',
+  gold:        '#ffd700',
+  goldDim:     '#7a5a30',
+  shadow:      '4px 4px 0 #000',
+  shadowSm:    '2px 2px 0 #000',
+}
+
+function AuthInput({ type, placeholder, value, onChange, onKeyDown }: {
+  type: string; placeholder: string; value: string
+  onChange: (v: string) => void; onKeyDown?: (e: React.KeyboardEvent) => void
+}) {
+  return (
+    <input
+      type={type}
+      placeholder={placeholder}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      onKeyDown={onKeyDown}
+      autoComplete="off"
+      className="w-full px-3 py-2.5 text-sm text-yellow-200 outline-none"
+      style={{ ...MONO, background: A.bgInput, border: `2px solid ${A.border}`, boxShadow: `inset ${A.shadowSm}` }}
+    />
+  )
+}
+
+function AuthError({ msg }: { msg: string }) {
+  return (
+    <p className="text-xs px-3 py-2" style={{ ...MONO, color: '#f87171', background: A.bgErr, border: `2px solid ${A.borderRed}`, boxShadow: A.shadowSm }}>
+      ⚠️ {msg}
+    </p>
+  )
+}
+
+function AuthBtn({ label, loading, disabled, onClick }: { label: string; loading: boolean; disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading || disabled}
+      className="w-full py-3 font-bold text-sm transition mt-1"
+      style={{
+        ...MONO,
+        border: `4px solid ${A.borderGold}`,
+        background: loading || disabled ? 'rgba(20,10,5,0.5)' : A.bgBtn,
+        color: loading || disabled ? '#555' : A.gold,
+        boxShadow: loading || disabled ? 'none' : A.shadow,
+        textShadow: '1px 1px 0 #000',
+        cursor: loading || disabled ? 'not-allowed' : 'pointer',
+      }}
+    >
+      {loading ? '...' : label}
+    </button>
+  )
+}
+
+// ─── Login ────────────────────────────────────────────────────────────────────
+
+function LoginForm({ onSwitch, onSuccess }: { onSwitch: () => void; onSuccess: () => void }) {
   const supabase = createClient()
-  const [mode, setMode] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [blackout, setBlackout] = useState(false)
 
-  async function handleSubmit() {
-    setLoading(true)
-    setError('')
-    try {
-      if (mode === 'register') {
-        const { error } = await supabase.auth.signUp({ email, password })
-        if (error) { setError(error.message); setLoading(false); return }
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
-        if (error) { setError(error.message); setLoading(false); return }
-      }
-      // Fade a negro, luego recargar
-      setBlackout(true)
-      setTimeout(() => window.location.reload(), 600)
-    } catch {
-      setLoading(false)
-    }
+  async function handleLogin() {
+    if (!email || !password) return
+    setLoading(true); setError('')
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) { setError(error.message); setLoading(false); return }
+    onSuccess()
   }
 
-  function handleKey(e: React.KeyboardEvent) {
-    if (e.key === 'Enter') handleSubmit()
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === 'Enter') handleLogin() }
+
+  return (
+    <div className="flex flex-col gap-3 p-6">
+      <AuthInput type="email" placeholder="Email" value={email} onChange={setEmail} onKeyDown={onKey} />
+      <AuthInput type="password" placeholder="Contraseña" value={password} onChange={setPassword} onKeyDown={onKey} />
+      {error && <AuthError msg={error} />}
+      <AuthBtn label="▶ Iniciar sesión" loading={loading} disabled={!email || !password} onClick={handleLogin} />
+    </div>
+  )
+}
+
+// ─── Register ─────────────────────────────────────────────────────────────────
+
+function RegisterForm({ onSwitch, onSuccess }: { onSwitch: () => void; onSuccess: () => void }) {
+  const supabase = createClient()
+  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleRegister() {
+    if (!username.trim()) { setError('Elegí un nombre de aventurero.'); return }
+    if (username.trim().length < 3) { setError('El nombre debe tener al menos 3 caracteres.'); return }
+    if (!email || !password) { setError('Completá todos los campos.'); return }
+    if (password !== confirm) { setError('Las contraseñas no coinciden.'); return }
+    if (password.length < 6) { setError('La contraseña debe tener al menos 6 caracteres.'); return }
+    setLoading(true); setError('')
+    const { error } = await supabase.auth.signUp({
+      email, password,
+      options: { data: { username: username.trim() } }
+    })
+    if (error) { setError(error.message); setLoading(false); return }
+    onSuccess()
+  }
+
+  const onKey = (e: React.KeyboardEvent) => { if (e.key === 'Enter') handleRegister() }
+
+  return (
+    <div className="flex flex-col gap-3 p-6">
+      <div>
+        <label style={{ ...MONO, fontSize: '11px', color: A.goldDim, display: 'block', marginBottom: '4px' }}>
+          Nombre de aventurero
+        </label>
+        <AuthInput type="text" placeholder="Ej: Kael, Mira, Thorin..." value={username} onChange={setUsername} onKeyDown={onKey} />
+      </div>
+      <div>
+        <label style={{ ...MONO, fontSize: '11px', color: A.goldDim, display: 'block', marginBottom: '4px' }}>
+          Email
+        </label>
+        <AuthInput type="email" placeholder="tu@email.com" value={email} onChange={setEmail} onKeyDown={onKey} />
+      </div>
+      <div>
+        <label style={{ ...MONO, fontSize: '11px', color: A.goldDim, display: 'block', marginBottom: '4px' }}>
+          Contraseña
+        </label>
+        <AuthInput type="password" placeholder="Mínimo 6 caracteres" value={password} onChange={setPassword} onKeyDown={onKey} />
+      </div>
+      <div>
+        <label style={{ ...MONO, fontSize: '11px', color: A.goldDim, display: 'block', marginBottom: '4px' }}>
+          Confirmar contraseña
+        </label>
+        <AuthInput type="password" placeholder="Repetí la contraseña" value={confirm} onChange={setConfirm} onKeyDown={onKey} />
+      </div>
+      {error && <AuthError msg={error} />}
+      <AuthBtn label="▶ Crear cuenta" loading={loading} disabled={!username || !email || !password || !confirm} onClick={handleRegister} />
+      <button onClick={onSwitch} className="text-xs text-center mt-1 transition" style={{ ...MONO, color: A.goldDim }}>
+        ¿Ya tenés cuenta? → Iniciá sesión
+      </button>
+    </div>
+  )
+}
+
+// ─── AuthScreen ───────────────────────────────────────────────────────────────
+
+function AuthScreen() {
+  const [showRegister, setShowRegister] = useState(false)
+  const [blackout, setBlackout] = useState(false)
+
+  function handleSuccess() {
+    setBlackout(true)
+    setTimeout(() => window.location.reload(), 600)
   }
 
   return (
-    <div
-      className="h-screen flex items-center justify-center"
-      
-     style={{}}>
-      <BgImage src="/sprites/backgrounds/hub_background.png" />
+    <div className="h-screen flex flex-col items-center justify-center gap-6" style={{ paddingBottom: '8vh' }}>
+      <BgImage src="/sprites/backgrounds/login_background.png" />
       <FadeOverlay visible={blackout} />
 
-      <div
-        className="w-full max-w-sm flex flex-col"
+      <style>{`
+        @keyframes logoDown {
+          0%   { transform: translateY(-40px); opacity: 0; }
+          100% { transform: translateY(0px);   opacity: 1; }
+        }
+        @keyframes panelUp {
+          0%   { transform: translateY(40px); opacity: 0; }
+          100% { transform: translateY(0px);  opacity: 1; }
+        }
+        @keyframes modalIn {
+          0%   { opacity: 0; scale: 0.96; }
+          100% { opacity: 1; scale: 1; }
+        }
+      `}</style>
+
+      {/* Logo */}
+      <img
+        src="/sprites/backgrounds/title.png"
+        alt="RPG Dungeon"
         style={{
-          border: '4px solid #4a3000',
-          boxShadow: '4px 4px 0 #000, inset 0 0 0 1px rgba(255,180,0,0.08)',
-          background: 'rgba(10,5,2,0.95)'
+          imageRendering: 'pixelated',
+          maxWidth: '1020px',
+          width: '90%',
+          filter: 'drop-shadow(0 4px 16px rgba(0,0,0,0.9))',
+          animation: 'logoDown 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards',
         }}
-      >
-        {/* Header */}
-        <div
-          className="px-6 py-4 border-b-4 border-yellow-900 text-center"
-          style={{ background: 'rgba(20,10,5,0.95)', boxShadow: '0 4px 0 #000' }}
-        >
-          <p className="text-3xl mb-1">⚔️</p>
-          <h1
-            className="text-yellow-400 font-bold uppercase tracking-widest text-base"
-            style={{ ...MONO, textShadow: '2px 2px 0 #000' }}
-          >
-            RPG Dungeon
-          </h1>
-          <p className="text-yellow-800 text-xs mt-1" style={MONO}>
-            {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
-          </p>
-        </div>
+      />
 
-        {/* Formulario */}
-        <div className="flex flex-col gap-3 p-6">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            onKeyDown={handleKey}
-            className="w-full px-3 py-2 text-sm text-yellow-200 outline-none"
-            style={{
-              ...MONO,
-              background: 'rgba(0,0,0,0.6)',
-              border: '2px solid #4a3000',
-              boxShadow: 'inset 2px 2px 0 #000'
-            }}
-          />
-          <input
-            type="password"
-            placeholder="Contraseña"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            onKeyDown={handleKey}
-            className="w-full px-3 py-2 text-sm text-yellow-200 outline-none"
-            style={{
-              ...MONO,
-              background: 'rgba(0,0,0,0.6)',
-              border: '2px solid #4a3000',
-              boxShadow: 'inset 2px 2px 0 #000'
-            }}
-          />
-
-          {error && (
-            <p className="text-xs px-3 py-2" style={{
-              ...MONO, color: '#f87171',
-              background: 'rgba(120,0,0,0.30)',
-              border: '2px solid #7f1d1d',
-              boxShadow: '2px 2px 0 #000'
-            }}>
-              {error}
-            </p>
-          )}
-
+      {/* Panel login */}
+      <div style={{
+        width: '100%', maxWidth: '420px',
+        border: `4px solid ${A.border}`,
+        boxShadow: `${A.shadow}, inset 0 0 0 1px rgba(255,180,0,0.06)`,
+        background: A.bg,
+        animation: 'panelUp 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+      }}>
+        {/* Header login */}
+        <div className="flex items-center justify-between px-5 py-3 border-b-4" style={{ borderColor: A.border, background: 'rgba(20,10,2,0.95)' }}>
+          <span style={{ ...MONO, color: A.gold, fontWeight: 'bold', fontSize: '14px', textShadow: '1px 1px 0 #000' }}>🗝️ Iniciar sesión</span>
           <button
-            onClick={handleSubmit}
-            disabled={loading || !email || !password}
-            className="w-full py-2.5 font-bold text-sm transition mt-1"
-            style={{
-              ...MONO,
-              border: '4px solid #c8860a',
-              background: loading ? 'rgba(20,10,5,0.5)' : 'rgba(100,65,0,0.85)',
-              color: loading ? '#555' : '#ffd700',
-              boxShadow: loading ? 'none' : '4px 4px 0 #000',
-              textShadow: '1px 1px 0 #000',
-              cursor: loading || !email || !password ? 'not-allowed' : 'pointer',
-              opacity: !email || !password ? 0.5 : 1
-            }}
+            onClick={() => setShowRegister(true)}
+            className="text-xs font-bold transition px-3 py-1.5"
+            style={{ ...MONO, border: `2px solid ${A.border}`, background: 'rgba(40,20,0,0.7)', color: A.goldDim }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = A.borderGold; e.currentTarget.style.color = A.gold }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = A.border; e.currentTarget.style.color = A.goldDim }}
           >
-            {loading ? '...' : mode === 'login' ? '▶ Entrar' : '▶ Registrarse'}
-          </button>
-
-          <button
-            onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}
-            className="text-xs transition mt-1 text-center"
-            style={{ ...MONO, color: '#7a5a30' }}
-          >
-            {mode === 'login'
-              ? '¿No tenés cuenta? → Registrate'
-              : '¿Ya tenés cuenta? → Iniciá sesión'}
+            📜 Registrarse →
           </button>
         </div>
+        <LoginForm onSwitch={() => setShowRegister(true)} onSuccess={handleSuccess} />
       </div>
+
+      {/* Modal de registro — flotante con overlay */}
+      {showRegister && (
+        <>
+          {/* Overlay oscuro */}
+          <div
+            className="fixed inset-0 z-40"
+            style={{ background: 'rgba(0,0,0,0.75)' }}
+            onClick={() => setShowRegister(false)}
+          />
+          {/* Modal */}
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', zIndex: 50,
+            translate: '-50% -50%',
+            width: '90%', maxWidth: '440px',
+            border: `4px solid ${A.borderGold}`,
+            outline: `2px solid rgba(200,134,10,0.25)`,
+            outlineOffset: '4px',
+            boxShadow: `${A.shadow}, 0 0 32px rgba(200,134,10,0.20), 0 0 80px rgba(0,0,0,0.60)`,
+            background: A.bg,
+            animation: 'modalIn 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+          }}>
+            {/* Header modal */}
+            <div className="flex items-center justify-between px-5 py-3 border-b-4" style={{ borderColor: A.borderGold, background: 'rgba(20,10,2,0.95)' }}>
+              <span style={{ ...MONO, color: A.gold, fontWeight: 'bold', fontSize: '14px', textShadow: '1px 1px 0 #000' }}>📜 Crear cuenta</span>
+              <button
+                onClick={() => setShowRegister(false)}
+                style={{ ...MONO, color: A.goldDim, fontSize: '20px', lineHeight: 1, background: 'none', border: 'none', cursor: 'pointer' }}
+                onMouseEnter={e => e.currentTarget.style.color = A.gold}
+                onMouseLeave={e => e.currentTarget.style.color = A.goldDim}
+              >✕</button>
+            </div>
+            <RegisterForm onSwitch={() => setShowRegister(false)} onSuccess={handleSuccess} />
+          </div>
+        </>
+      )}
     </div>
   )
 }

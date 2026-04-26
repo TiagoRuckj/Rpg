@@ -94,10 +94,10 @@ function filterByTab(inventory: InventoryEntry[], tab: Tab): InventoryEntry[] {
   })
 }
 
-function EquipSlot({ slotKey, gear, large, onClick }: { slotKey: string; gear: EquippedGear; large?: boolean; onClick?: () => void }) {
+function EquipSlot({ slotKey, gear, onClick }: { slotKey: string; gear: EquippedGear; onClick?: () => void }) {
   const equippedItem = (gear as any)[slotKey] as import('@/types/game').EquippedItem | null
   const item = equippedItem?.item ?? null
-  const size = large ? 68 : 56
+  const size = 62
   const label = SLOT_LABELS[slotKey] ?? slotKey
 
   return (
@@ -132,11 +132,11 @@ function EquipSlot({ slotKey, gear, large, onClick }: { slotKey: string; gear: E
             )}
           </>
         ) : (
-          <span style={{ color: C.textDim, fontSize: large ? '24px' : '18px', fontFamily: 'monospace' }}>+</span>
+          <span style={{ color: '#a07858', fontSize: '20px', fontFamily: 'monospace' }}>+</span>
         )}
       </div>
-      <span style={{ fontFamily: 'monospace', fontSize: '9px', color: item ? C.text : C.textDim, textAlign: 'center', lineHeight: '1.1', maxWidth: size + 'px' }}>
-        {item ? item.name.split(' ').slice(0, 2).join(' ') : label.split(' ').slice(1).join(' ')}
+      <span style={{ fontFamily: 'monospace', fontSize: '9px', color: item ? C.text : '#a07858', textAlign: 'center', lineHeight: '1.1', maxWidth: (size + 20) + 'px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {item ? item.name : label.split(' ').slice(1).join(' ') || label}
       </span>
     </div>
   )
@@ -232,7 +232,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
         <div className="w-72 shrink-0 flex flex-col p-3 border-r-4 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
           style={{ background: 'rgba(10,3,3,0.88)', borderColor: C.border, boxShadow: '4px 0 0 #000' }}>
 
-          <p className="text-xs font-bold uppercase tracking-widest mb-3" style={{ ...MONO, color: C.textDim }}>Equipado</p>
+          <p className="text-xs font-bold uppercase tracking-widest mb-3" style={{ ...MONO, color: '#a07858' }}>Equipado</p>
 
           {/* Paper doll — centrado verticalmente */}
           <div className="flex-1 flex flex-col justify-center gap-2">
@@ -247,7 +247,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
             <div className="flex items-center justify-center gap-3">
               <EquipSlot slotKey="weapon" gear={gear}
                 onClick={() => { const e = inventory.find(e => e.equipped && e.item?.type === 'weapon'); if (e) setSelectedEntry(e) }} />
-              <EquipSlot slotKey="chest" gear={gear} large
+              <EquipSlot slotKey="chest" gear={gear}
                 onClick={() => { const e = inventory.find(e => e.equipped && e.item?.type === 'armor' && e.item?.stats?.slot === 'chest'); if (e) setSelectedEntry(e) }} />
               <EquipSlot slotKey="gloves" gear={gear}
                 onClick={() => { const e = inventory.find(e => e.equipped && e.item?.type === 'armor' && e.item?.stats?.slot === 'gloves'); if (e) setSelectedEntry(e) }} />
@@ -281,35 +281,35 @@ export default function InventoryClient({ player, inventory: initialInventory, o
         </div>
 
         {/* ── Col 2: inventario ── */}
-        <div className="flex-1 p-4 flex flex-col gap-3 overflow-y-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+        <div className="flex-1 flex flex-col overflow-hidden"
           style={{ background: 'rgba(8,2,2,0.70)' }}>
 
-          {/* Tabs */}
-          <div className="flex gap-1 flex-wrap shrink-0">
+          {/* Tabs — llenan todo el ancho */}
+          <div className="flex shrink-0 border-b-4" style={{ borderColor: C.border }}>
             {(Object.keys(TAB_LABELS) as Tab[]).map(t => (
               <button key={t} onClick={() => setTab(t)}
-                className="px-3 py-1.5 text-xs font-bold transition"
+                className="flex-1 py-2 text-xs font-bold transition"
                 style={{
                   ...MONO,
-                  border: '2px solid',
-                  borderColor: tab === t ? C.borderHover : C.border,
+                  borderRight: `2px solid ${C.border}`,
                   background: tab === t ? 'rgba(100,25,5,0.85)' : 'rgba(20,5,5,0.70)',
-                  color: tab === t ? C.goldBright : C.textDim,
-                  boxShadow: tab === t ? C.shadowSm : 'none',
+                  color: tab === t ? C.goldBright : '#a07858',
                   textShadow: tab === t ? '1px 1px 0 #000' : 'none',
+                  borderBottom: tab === t ? `3px solid ${C.borderHover}` : 'none',
                 }}>
-                {TAB_LABELS[t]} <span style={{ opacity: 0.6 }}>({filterByTab(inventory, t).length})</span>
+                {TAB_LABELS[t]} <span style={{ opacity: 0.7 }}>({filterByTab(inventory, t).length})</span>
               </button>
             ))}
           </div>
 
-          {/* Items */}
-          {tabItems.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center">
-              <span style={{ ...MONO, color: C.textDim, fontSize: '13px' }}>No tenés items en esta categoría</span>
-            </div>
-          ) : (
-            <div className="flex flex-wrap gap-3 content-start">
+          {/* Items — scrolleable */}
+          <div className="flex-1 overflow-y-auto p-4 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+            {tabItems.length === 0 ? (
+              <div className="flex items-center justify-center h-full">
+                <span style={{ ...MONO, color: '#a07858', fontSize: '13px' }}>No tenés items en esta categoría</span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-3 content-start">
               {tabItems.map(entry => {
                 if (!entry.item) return null
                 const item = entry.item
@@ -324,7 +324,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
                         <ItemIcon item={item} size="sm" />
                         <div>
                           <p className="text-sm font-bold" style={{ color: RARITY_TEXT[item.rarity] ?? C.text }}>{item.name}</p>
-                          <p style={{ fontSize: '11px', color: C.textDim }}>x{entry.quantity}</p>
+                          <p style={{ fontSize: '11px', color: '#a07858' }}>x{entry.quantity}</p>
                         </div>
                       </div>
                       {item.effect && (
@@ -348,7 +348,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
                 if (item.type === 'material') {
                   return (
                     <div key={entry.id} className="relative">
-                      <ItemIcon item={item} quantity={entry.quantity} size="lg" />
+                      <ItemIcon item={item} quantity={entry.quantity} size="xl" />
                     </div>
                   )
                 }
@@ -360,11 +360,10 @@ export default function InventoryClient({ player, inventory: initialInventory, o
                     onClick={() => setSelectedEntry(isSelected ? null : entry)}
                     className="relative cursor-pointer transition-all"
                     style={{
-                      border: `3px solid ${isSelected ? C.borderHover : entry.locked ? '#8B3500' : C.border}`,
-                      outline: isSelected ? `1px solid ${C.borderHover}` : 'none',
+                      outline: isSelected ? `3px solid ${C.borderHover}` : '3px solid transparent',
                       outlineOffset: '2px',
-                      boxShadow: isSelected ? `${C.shadow}, 0 0 10px ${C.borderHover}66` : C.shadowSm,
-                      transition: 'border-color 0.12s, box-shadow 0.12s',
+                      boxShadow: isSelected ? `0 0 10px ${C.borderHover}66` : 'none',
+                      transition: 'outline-color 0.12s, box-shadow 0.12s',
                     }}
                   >
                     <ItemIcon
@@ -372,7 +371,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
                       upgradeLevel={entry.upgrade_level ?? 0}
                       skillSlots={entry.skill_slots ?? 0}
                       instancePassives={entry.instance_passives ?? []}
-                      size="lg"
+                      size="xl"
                     />
                     {entry.locked && (
                       <div className="absolute top-1 left-1" style={{ fontSize: '12px' }}>🔒</div>
@@ -382,6 +381,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
               })}
             </div>
           )}
+          </div>
         </div>
         {/* ── Col 3: detalle del item ── */}
         <div className="w-72 shrink-0 flex flex-col border-l-4 overflow-y-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
@@ -390,7 +390,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
           {!selectedEntry || !selectedEntry.item ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6">
               <span style={{ fontSize: '32px', opacity: 0.3 }}>🗡️</span>
-              <p style={{ ...MONO, fontSize: '12px', color: C.textDim, textAlign: 'center' }}>Seleccioná un item para ver sus detalles</p>
+              <p style={{ ...MONO, fontSize: '12px', color: '#9a7a60', textAlign: 'center' }}>Seleccioná un item para ver sus detalles</p>
             </div>
           ) : (() => {
             const entry = selectedEntry
@@ -404,7 +404,7 @@ export default function InventoryClient({ player, inventory: initialInventory, o
                   <p className="font-bold text-sm" style={{ ...MONO, color: RARITY_TEXT[item.rarity] ?? C.text, textShadow: '1px 1px 0 #000' }}>
                     {item.name}{(entry.upgrade_level ?? 0) > 0 && <span style={{ color: '#fb923c', marginLeft: '4px' }}>+{entry.upgrade_level}</span>}
                   </p>
-                  <button onClick={() => setSelectedEntry(null)} style={{ ...MONO, color: C.textDim, fontSize: '18px', lineHeight: 1 }}
+                  <button onClick={() => setSelectedEntry(null)} style={{ ...MONO, color: '#a07858', fontSize: '18px', lineHeight: 1 }}
                     onMouseEnter={e => e.currentTarget.style.color = C.gold}
                     onMouseLeave={e => e.currentTarget.style.color = C.textDim}>✕</button>
                 </div>
@@ -418,30 +418,35 @@ export default function InventoryClient({ player, inventory: initialInventory, o
                   {entry.locked && <span style={{ ...MONO, fontSize: '11px', padding: '2px 8px', border: '2px solid #8B3500', background: 'rgba(80,30,0,0.6)', color: '#fb923c' }}>🔒 Bloqueado</span>}
                   <span style={{ ...MONO, fontSize: '11px', padding: '2px 8px', border: `2px solid ${RARITY_COLOR[item.rarity] ?? '#555'}`, background: 'rgba(0,0,0,0.4)', color: RARITY_TEXT[item.rarity] ?? C.text }}>{item.rarity}</span>
                 </div>
+                {item.description && (
+                  <p className="px-4 mt-3" style={{ ...MONO, fontSize: '12px', color: '#9a7a60', lineHeight: '1.5', fontStyle: 'italic' }}>
+                    "{item.description}"
+                  </p>
+                )}
                 <div className="px-4 mt-4 flex flex-col gap-2">
-                  {base > 0 && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: C.textDim }}>⚔️ Ataque</span><span style={{ color: '#fb923c', fontWeight: 'bold' }}>{base + bonus}{bonus > 0 && <span style={{ color: '#f97316', fontSize: '11px', marginLeft: '4px' }}>(+{bonus})</span>}</span></div>}
-                  {item.stats?.defense && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: C.textDim }}>🛡️ Defensa</span><span style={{ color: '#60a5fa', fontWeight: 'bold' }}>{item.stats.defense}</span></div>}
-                  {item.stats?.hp_bonus && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: C.textDim }}>❤️ HP bonus</span><span style={{ color: '#f87171', fontWeight: 'bold' }}>+{item.stats.hp_bonus}</span></div>}
-                  {item.stats?.crit_chance && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: C.textDim }}>🍀 Crítico</span><span style={{ color: '#4ade80', fontWeight: 'bold' }}>+{(item.stats.crit_chance * 100).toFixed(0)}%</span></div>}
-                  {(entry.upgrade_level ?? 0) > 0 && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: C.textDim }}>Mejora</span><span style={{ color: '#fb923c' }}>{'★'.repeat(entry.upgrade_level ?? 0)}{'☆'.repeat(5 - (entry.upgrade_level ?? 0))}</span></div>}
+                  {base > 0 && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: '#a07858' }}>⚔️ Ataque</span><span style={{ color: '#fb923c', fontWeight: 'bold' }}>{base + bonus}{bonus > 0 && <span style={{ color: '#f97316', fontSize: '11px', marginLeft: '4px' }}>(+{bonus})</span>}</span></div>}
+                  {item.stats?.defense && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: '#a07858' }}>🛡️ Defensa</span><span style={{ color: '#60a5fa', fontWeight: 'bold' }}>{item.stats.defense}</span></div>}
+                  {item.stats?.hp_bonus && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: '#a07858' }}>❤️ HP bonus</span><span style={{ color: '#f87171', fontWeight: 'bold' }}>+{item.stats.hp_bonus}</span></div>}
+                  {item.stats?.crit_chance && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: '#a07858' }}>🍀 Crítico</span><span style={{ color: '#4ade80', fontWeight: 'bold' }}>+{(item.stats.crit_chance * 100).toFixed(0)}%</span></div>}
+                  {(entry.upgrade_level ?? 0) > 0 && <div className="flex justify-between text-sm" style={MONO}><span style={{ color: '#a07858' }}>Mejora</span><span style={{ color: '#fb923c' }}>{'★'.repeat(entry.upgrade_level ?? 0)}{'☆'.repeat(5 - (entry.upgrade_level ?? 0))}</span></div>}
                 </div>
                 {passiveIds.length > 0 && (
                   <div className="px-4 mt-4">
-                    <p className="text-xs font-bold uppercase tracking-wider mb-2" style={{ ...MONO, color: C.textDim }}>Pasivas</p>
+                    <p className="text-xs font-bold uppercase tracking-wider mb-2" style={{ ...MONO, color: '#c8906a' }}>Pasivas</p>
                     <div className="flex flex-col gap-2">
-                      {passiveIds.map(id => { const label = PASSIVE_LABELS[id]; return label ? <div key={id} className="p-2" style={{ background: 'rgba(80,20,80,0.20)', border: '2px solid #4a1060', boxShadow: C.shadowSm }}><p style={{ ...MONO, fontSize: '12px', fontWeight: 'bold', color: '#c084fc' }}>✦ {label.name}</p><p style={{ ...MONO, fontSize: '11px', color: C.textDim }}>{label.description}</p></div> : null })}
+                      {passiveIds.map(id => { const label = PASSIVE_LABELS[id]; return label ? <div key={id} className="p-2" style={{ background: 'rgba(80,20,80,0.20)', border: '2px solid #4a1060', boxShadow: C.shadowSm }}><p style={{ ...MONO, fontSize: '12px', fontWeight: 'bold', color: '#c084fc' }}>✦ {label.name}</p><p style={{ ...MONO, fontSize: '11px', color: '#9a7a60' }}>{label.description}</p></div> : null })}
                     </div>
                   </div>
                 )}
                 {(entry.skill_slots ?? 0) > 0 && (
                   <div className="px-4 mt-4">
                     <div className="flex items-center justify-between mb-2">
-                      <p className="text-xs font-bold uppercase tracking-wider" style={{ ...MONO, color: C.textDim }}>Ranuras</p>
-                      <span style={{ color: '#c084fc', fontSize: '13px' }}>{'◆'.repeat(entry.instance_passives?.length ?? 0)}{'◇'.repeat((entry.skill_slots ?? 0) - (entry.instance_passives?.length ?? 0))}<span style={{ color: C.textDim, fontSize: '11px', marginLeft: '4px' }}>({entry.instance_passives?.length ?? 0}/{entry.skill_slots})</span></span>
+                      <p className="text-xs font-bold uppercase tracking-wider" style={{ ...MONO, color: '#c8906a' }}>Ranuras</p>
+                      <span style={{ color: '#c084fc', fontSize: '13px' }}>{'◆'.repeat(entry.instance_passives?.length ?? 0)}{'◇'.repeat((entry.skill_slots ?? 0) - (entry.instance_passives?.length ?? 0))}<span style={{ color: '#9a7a60', fontSize: '11px', marginLeft: '4px' }}>({entry.instance_passives?.length ?? 0}/{entry.skill_slots})</span></span>
                     </div>
                     {(entry.instance_passives ?? []).length > 0
-                      ? <div className="flex flex-col gap-2">{(entry.instance_passives ?? []).map(id => { const label = PASSIVE_LABELS[id]; return label ? <div key={id} className="p-2" style={{ background: 'rgba(80,20,80,0.20)', border: '2px solid #4a1060', boxShadow: C.shadowSm }}><p style={{ ...MONO, fontSize: '12px', fontWeight: 'bold', color: '#c084fc' }}>✦ {label.name}</p><p style={{ ...MONO, fontSize: '11px', color: C.textDim }}>{label.description}</p></div> : null })}</div>
-                      : <p style={{ ...MONO, fontSize: '11px', color: C.textDim }}>Sin pasivas engastadas</p>}
+                      ? <div className="flex flex-col gap-2">{(entry.instance_passives ?? []).map(id => { const label = PASSIVE_LABELS[id]; return label ? <div key={id} className="p-2" style={{ background: 'rgba(80,20,80,0.20)', border: '2px solid #4a1060', boxShadow: C.shadowSm }}><p style={{ ...MONO, fontSize: '12px', fontWeight: 'bold', color: '#c084fc' }}>✦ {label.name}</p><p style={{ ...MONO, fontSize: '11px', color: '#9a7a60' }}>{label.description}</p></div> : null })}</div>
+                      : <p style={{ ...MONO, fontSize: '11px', color: '#9a7a60' }}>Sin pasivas engastadas</p>}
                   </div>
                 )}
                 <div className="mt-auto p-4 flex flex-col gap-2 border-t-4" style={{ borderColor: C.border }}>

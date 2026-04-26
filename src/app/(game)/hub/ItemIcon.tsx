@@ -4,6 +4,26 @@ import React, { useState, useRef } from 'react'
 import { Item, calcUpgradeBonus } from '@/types/game'
 import { PASSIVE_LABELS, WEAPON_PASSIVES } from '@/lib/game/passiveLabels'
 
+const MONO: React.CSSProperties = { fontFamily: 'monospace' }
+
+const RARITY_BORDER: Record<string, string> = {
+  common:    '#6b7280', // gris
+  rare:      '#3b82f6', // azul
+  epic:      '#a855f7', // violeta
+  legendary: '#f59e0b', // dorado
+}
+const RARITY_COLOR: Record<string, string> = {
+  common:    '#9ca3af',
+  rare:      '#60a5fa',
+  epic:      '#c084fc',
+  legendary: '#fbbf24',
+}
+const RARITY_LABEL: Record<string, string> = {
+  common: 'Común', rare: 'Raro', epic: 'Épico', legendary: 'Legendario',
+}
+
+const SIZE_PX: Record<string, number> = { sm: 48, md: 64, lg: 80, xl: 112 }
+
 interface Props {
   item: Item
   quantity?: number
@@ -14,36 +34,7 @@ interface Props {
   onClick?: () => void
   actionLabel?: string
   actionDisabled?: boolean
-  size?: 'sm' | 'md' | 'lg'
-}
-
-const rarityBorder: Record<string, string> = {
-  common:    'border-gray-500',
-  rare:      'border-blue-500',
-  epic:      'border-purple-500',
-  legendary: 'border-yellow-500',
-}
-
-const rarityGlow: Record<string, string> = {
-  common:    '',
-  rare:      'shadow-blue-500/30',
-  epic:      'shadow-purple-500/30',
-  legendary: 'shadow-yellow-500/30',
-}
-
-const rarityText: Record<string, string> = {
-  common: 'text-gray-300', rare: 'text-blue-400',
-  epic: 'text-purple-400', legendary: 'text-yellow-400',
-}
-
-const rarityLabels: Record<string, string> = {
-  common: 'Común', rare: 'Raro', epic: 'Épico', legendary: 'Legendario',
-}
-
-const sizeClasses = {
-  sm: 'w-12 h-12',
-  md: 'w-16 h-16',
-  lg: 'w-20 h-20',
+  size?: 'sm' | 'md' | 'lg' | 'xl'
 }
 
 export default function ItemIcon({
@@ -53,171 +44,224 @@ export default function ItemIcon({
   const [showTooltip, setShowTooltip] = useState(false)
   const [tooltipStyle, setTooltipStyle] = useState<React.CSSProperties>({})
   const ref = useRef<HTMLDivElement>(null)
+  const px = SIZE_PX[size]
 
   function handleMouseEnter() {
-    if (ref.current) {
-      const rect = ref.current.getBoundingClientRect()
-      const tooltipW = 208
-      const tooltipH = 300
-      const vw = window.innerWidth
-      const above = rect.top - tooltipH - 8
-      const top = above > 0 ? above : rect.bottom + 8
-      let left = rect.left + rect.width / 2 - tooltipW / 2
-      if (left < 8) left = 8
-      if (left + tooltipW > vw - 8) left = vw - tooltipW - 8
-      setTooltipStyle({ position: 'fixed', top, left, width: tooltipW, zIndex: 9999 })
-    }
+    if (!ref.current) return
+    const rect = ref.current.getBoundingClientRect()
+    const W = 220, H = 340
+    const top = rect.top - H - 8 > 0 ? rect.top - H - 8 : rect.bottom + 8
+    let left = rect.left + rect.width / 2 - W / 2
+    left = Math.max(8, Math.min(left, window.innerWidth - W - 8))
+    setTooltipStyle({ position: 'fixed', top, left, width: W, zIndex: 9999 })
     setShowTooltip(true)
   }
 
-  const spriteSrc = item.sprite
-    ? `/sprites/items/${item.sprite}`
-    : '/sprites/items/placeholder.png'
+  const rarityColor = RARITY_COLOR[item.rarity] ?? '#999'
+  const rarityBorder = RARITY_BORDER[item.rarity] ?? '#555'
+  const spriteSrc = item.sprite ? `/sprites/items/${item.sprite}` : '/sprites/items/placeholder.png'
+
+  const base = item.stats?.attack ?? 0
+  const bonus = calcUpgradeBonus(base, upgradeLevel)
+  const passiveIds = item.stats?.passives ?? WEAPON_PASSIVES[item.stats?.weapon_type ?? 'none'] ?? []
 
   return (
     <div className="relative" ref={ref}>
-      {/* Icono */}
+      {/* ── Ícono principal ── */}
       <div
         onMouseEnter={handleMouseEnter}
         onMouseLeave={() => setShowTooltip(false)}
         onClick={onClick}
-        className={`
-          relative ${sizeClasses[size]} border-2 rounded-lg bg-gray-800 
-          ${rarityBorder[item.rarity]} ${rarityGlow[item.rarity]}
-          ${equipped ? 'ring-2 ring-yellow-400 ring-offset-1 ring-offset-gray-900' : ''}
-          ${onClick ? 'cursor-pointer hover:brightness-125 transition' : ''}
-          flex items-center justify-center overflow-hidden
-          ${item.rarity !== 'common' ? 'shadow-lg' : ''}
-        `}
+        style={{
+          width: px, height: px,
+          border: `3px solid ${equipped ? '#16a34a' : rarityBorder}`,
+          background: 'rgba(0,0,0,0.75)',
+          boxShadow: equipped
+            ? '3px 3px 0 #000, inset 0 0 8px rgba(22,163,74,0.20)'
+            : `3px 3px 0 #000`,
+          position: 'relative',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: onClick ? 'pointer' : 'default',
+          flexShrink: 0,
+        }}
       >
         <img
           src={spriteSrc}
           alt={item.name}
-          className="w-full h-full object-contain p-1"
-          style={{ imageRendering: 'pixelated' }}
-          onError={(e) => {
-            // fallback si no existe el sprite
-            (e.target as HTMLImageElement).style.display = 'none'
-          }}
+          style={{ width: px - 10, height: px - 10, objectFit: 'contain', imageRendering: 'pixelated' }}
+          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
         />
 
         {/* Cantidad */}
         {quantity !== undefined && quantity > 1 && (
-          <span className="absolute bottom-0.5 right-1 text-xs font-bold text-white drop-shadow">
+          <span style={{
+            position: 'absolute', bottom: 2, right: 3,
+            ...MONO, fontSize: '10px', fontWeight: 'bold',
+            color: '#ffd700', textShadow: '1px 1px 0 #000',
+          }}>
             {quantity}
           </span>
         )}
 
-        {/* Indicador equipado */}
-        {equipped && (
-          <span className="absolute top-0.5 left-0.5 text-xs">✓</span>
+        {/* Mejora */}
+        {upgradeLevel > 0 && (
+          <span style={{
+            position: 'absolute', top: 2, right: 3,
+            ...MONO, fontSize: '9px', fontWeight: 'bold',
+            color: '#fb923c', textShadow: '1px 1px 0 #000',
+          }}>
+            +{upgradeLevel}
+          </span>
+        )}
+
+        {/* Ranuras */}
+        {skillSlots > 0 && (
+          <span style={{
+            position: 'absolute', bottom: 2, left: 3,
+            ...MONO, fontSize: '9px',
+            color: '#c084fc', textShadow: '1px 1px 0 #000',
+          }}>
+            {'◆'.repeat(instancePassives.length)}{'◇'.repeat(skillSlots - instancePassives.length)}
+          </span>
         )}
       </div>
 
-      {/* Tooltip */}
+      {/* ── Tooltip pixel art ── */}
       {showTooltip && (
-        <div
-          style={tooltipStyle}
-          className={`bg-gray-900 border ${rarityBorder[item.rarity]} rounded-lg p-3 shadow-xl pointer-events-none`}
-        >
-          {/* Nombre y rareza */}
-          <div className="mb-1">
-            <p className={`font-bold text-sm ${rarityText[item.rarity]}`}>
+        <div style={{
+          ...tooltipStyle,
+          background: 'rgba(8,3,3,0.98)',
+          border: `3px solid ${rarityBorder}`,
+          boxShadow: `4px 4px 0 #000, 0 0 12px ${rarityColor}44`,
+          padding: '0',
+          pointerEvents: 'none',
+        }}>
+          {/* Header */}
+          <div style={{
+            padding: '8px 12px',
+            borderBottom: `2px solid ${rarityBorder}`,
+            background: 'rgba(0,0,0,0.40)',
+          }}>
+            <p style={{ ...MONO, fontSize: '13px', fontWeight: 'bold', color: rarityColor, textShadow: '1px 1px 0 #000' }}>
               {item.name}
-              {upgradeLevel > 0 && <span className="text-orange-400 ml-1">+{upgradeLevel}</span>}
+              {upgradeLevel > 0 && <span style={{ color: '#fb923c', marginLeft: '6px' }}>+{upgradeLevel}</span>}
             </p>
-            <p className="text-xs text-gray-500">{rarityLabels[item.rarity]}</p>
-          </div>
-
-          {/* Slot para armaduras */}
-          {item.stats?.slot && (
-            <p className="text-xs text-gray-400 capitalize mb-1">Slot: {item.stats.slot}</p>
-          )}
-
-          {/* Stats */}
-          <div className="flex flex-col gap-0.5 text-xs border-t border-gray-700 pt-2 mt-1">
-            {item.stats?.attack && (() => {
-              const base = item.stats.attack
-              const bonus = calcUpgradeBonus(base, upgradeLevel)
-              return (
-                <span className="text-orange-300">
-                  ⚔️ {base + bonus} ataque
-                  {bonus > 0 && <span className="text-orange-400 ml-1">(+{bonus} mejora)</span>}
-                </span>
-              )
-            })()}
-            {item.stats?.defense    && <span className="text-blue-300">🛡️ +{item.stats.defense} defensa</span>}
-            {item.stats?.hp_bonus   && <span className="text-red-300">❤️ +{item.stats.hp_bonus} HP</span>}
-            {item.stats?.crit_chance && <span className="text-yellow-300">🍀 +{(item.stats.crit_chance * 100).toFixed(0)}% crítico</span>}
-            {item.effect?.heal_hp   && <span className="text-green-300">💊 Restaura {item.effect.heal_hp} HP</span>}
-            {upgradeLevel > 0 && (
-              <span className="text-orange-400">{'★'.repeat(upgradeLevel)}{'☆'.repeat(5 - upgradeLevel)}</span>
+            <p style={{ ...MONO, fontSize: '10px', color: '#6a4a30', marginTop: '2px' }}>
+              {RARITY_LABEL[item.rarity] ?? item.rarity}
+              {item.stats?.slot && ` · ${item.stats.slot}`}
+            </p>
+            {item.description && (
+              <p style={{ ...MONO, fontSize: '11px', color: '#9a7a60', marginTop: '6px', lineHeight: '1.4', fontStyle: 'italic' }}>
+                {item.description}
+              </p>
             )}
           </div>
 
-          {/* Pasivas — solo armas */}
-          {item.type === 'weapon' && (() => {
-            const passiveIds = item.stats?.passives ?? WEAPON_PASSIVES[item.stats?.weapon_type ?? 'none'] ?? []
-            if (passiveIds.length === 0) return null
-            return (
-              <div className="flex flex-col gap-1 text-xs border-t border-gray-700 pt-2 mt-1">
-                {passiveIds.map(id => {
-                  const label = PASSIVE_LABELS[id]
-                  if (!label) return null
-                  return (
-                    <div key={id}>
-                      <span className="text-violet-300 font-semibold">✦ {label.name}</span>
-                      <p className="text-gray-400 leading-tight">{label.description}</p>
-                    </div>
-                  )
-                })}
-              </div>
-            )
-          })()}
-
-          {/* Ranuras de habilidad — solo items de equipo con ranuras */}
-          {skillSlots > 0 && (
-            <div className="flex flex-col gap-1 text-xs border-t border-gray-700 pt-2 mt-1">
-              <div className="flex items-center gap-1">
-                <span className="text-gray-400">Ranuras:</span>
-                <span className="text-violet-400 font-bold">
-                  {'◆'.repeat(instancePassives.length)}{'◇'.repeat(skillSlots - instancePassives.length)}
+          {/* Stats */}
+          <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {base > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ ...MONO, fontSize: '11px', color: '#a07858' }}>⚔️ Ataque</span>
+                <span style={{ ...MONO, fontSize: '11px', color: '#fb923c', fontWeight: 'bold' }}>
+                  {base + bonus}{bonus > 0 && <span style={{ color: '#f97316', marginLeft: '4px' }}>(+{bonus})</span>}
                 </span>
-                <span className="text-gray-500">({instancePassives.length}/{skillSlots})</span>
               </div>
-              {instancePassives.map(id => {
+            )}
+            {item.stats?.defense && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ ...MONO, fontSize: '11px', color: '#a07858' }}>🛡️ Defensa</span>
+                <span style={{ ...MONO, fontSize: '11px', color: '#60a5fa', fontWeight: 'bold' }}>+{item.stats.defense}</span>
+              </div>
+            )}
+            {item.stats?.hp_bonus && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ ...MONO, fontSize: '11px', color: '#a07858' }}>❤️ HP</span>
+                <span style={{ ...MONO, fontSize: '11px', color: '#f87171', fontWeight: 'bold' }}>+{item.stats.hp_bonus}</span>
+              </div>
+            )}
+            {item.stats?.crit_chance && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ ...MONO, fontSize: '11px', color: '#a07858' }}>🍀 Crítico</span>
+                <span style={{ ...MONO, fontSize: '11px', color: '#4ade80', fontWeight: 'bold' }}>+{(item.stats.crit_chance * 100).toFixed(0)}%</span>
+              </div>
+            )}
+            {(item.effect as any)?.heal_hp && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ ...MONO, fontSize: '11px', color: '#a07858' }}>💊 Cura</span>
+                <span style={{ ...MONO, fontSize: '11px', color: '#4ade80', fontWeight: 'bold' }}>{(item.effect as any).heal_hp} HP</span>
+              </div>
+            )}
+            {upgradeLevel > 0 && (
+              <p style={{ ...MONO, fontSize: '10px', color: '#fb923c', marginTop: '2px' }}>
+                {'★'.repeat(upgradeLevel)}{'☆'.repeat(5 - upgradeLevel)}
+              </p>
+            )}
+            {item.value > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #2a1800', paddingTop: '4px', marginTop: '2px' }}>
+                <span style={{ ...MONO, fontSize: '11px', color: '#a07858' }}>💰 Valor</span>
+                <span style={{ ...MONO, fontSize: '11px', color: '#fbbf24', fontWeight: 'bold' }}>{item.value}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Pasivas */}
+          {passiveIds.length > 0 && (
+            <div style={{ padding: '6px 12px 8px', borderTop: '2px solid #2a1800' }}>
+              <p style={{ ...MONO, fontSize: '10px', color: '#7a4a20', marginBottom: '4px', letterSpacing: '0.08em' }}>PASIVAS</p>
+              {passiveIds.map(id => {
                 const label = PASSIVE_LABELS[id]
-                if (!label) return null
-                return (
-                  <div key={id}>
-                    <span className="text-violet-300 font-semibold">✦ {label.name}</span>
-                    <p className="text-gray-400 leading-tight">{label.description}</p>
+                return label ? (
+                  <div key={id} style={{ marginBottom: '4px' }}>
+                    <p style={{ ...MONO, fontSize: '11px', color: '#c084fc', fontWeight: 'bold' }}>✦ {label.name}</p>
+                    <p style={{ ...MONO, fontSize: '10px', color: '#9a7a60', lineHeight: '1.3' }}>{label.description}</p>
                   </div>
-                )
+                ) : null
               })}
             </div>
           )}
 
-          {/* Precio si aplica */}
-          {item.value > 0 && (
-            <p className="text-xs text-yellow-400 mt-2 border-t border-gray-700 pt-1">
-              💰 {item.value} gold
-            </p>
+          {/* Ranuras */}
+          {skillSlots > 0 && (
+            <div style={{ padding: '6px 12px 8px', borderTop: '2px solid #2a1800' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <p style={{ ...MONO, fontSize: '10px', color: '#7a4a20', letterSpacing: '0.08em' }}>RANURAS</p>
+                <span style={{ ...MONO, fontSize: '11px', color: '#c084fc' }}>
+                  {'◆'.repeat(instancePassives.length)}{'◇'.repeat(skillSlots - instancePassives.length)}
+                  <span style={{ color: '#6a4a30', marginLeft: '4px' }}>({instancePassives.length}/{skillSlots})</span>
+                </span>
+              </div>
+              {instancePassives.map(id => {
+                const label = PASSIVE_LABELS[id]
+                return label ? (
+                  <div key={id} style={{ marginBottom: '4px' }}>
+                    <p style={{ ...MONO, fontSize: '11px', color: '#c084fc', fontWeight: 'bold' }}>✦ {label.name}</p>
+                    <p style={{ ...MONO, fontSize: '10px', color: '#9a7a60', lineHeight: '1.3' }}>{label.description}</p>
+                  </div>
+                ) : null
+              })}
+            </div>
           )}
 
           {/* Acción */}
           {actionLabel && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onClick?.() }}
-              disabled={actionDisabled}
-              className={`w-full mt-2 py-1 rounded text-xs font-bold transition pointer-events-auto ${
-                actionDisabled
-                  ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                  : 'bg-yellow-500 hover:bg-yellow-400 text-black'
-              }`}
-            >
-              {actionLabel}
-            </button>
+            <div style={{ padding: '8px 12px', borderTop: '2px solid #2a1800' }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); onClick?.() }}
+                disabled={actionDisabled}
+                style={{
+                  ...MONO, width: '100%', padding: '6px', fontSize: '12px', fontWeight: 'bold',
+                  border: '3px solid', pointerEvents: 'auto',
+                  borderColor: actionDisabled ? '#2a1800' : '#c8860a',
+                  background: actionDisabled ? 'rgba(20,5,5,0.5)' : 'rgba(80,35,0,0.85)',
+                  color: actionDisabled ? '#555' : '#ffd700',
+                  boxShadow: actionDisabled ? 'none' : '3px 3px 0 #000',
+                  textShadow: '1px 1px 0 #000',
+                  cursor: actionDisabled ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {actionLabel}
+              </button>
+            </div>
           )}
         </div>
       )}

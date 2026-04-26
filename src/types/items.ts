@@ -26,6 +26,7 @@ export interface ItemEffect {
 export interface Item {
   id: number
   name: string
+  description?: string
   type: ItemType
   rarity: ItemRarity
   stats: ItemStats

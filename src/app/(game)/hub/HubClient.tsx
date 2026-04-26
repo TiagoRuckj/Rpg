@@ -379,6 +379,7 @@ export default function HubClient({ player, inventory: initialInventory, shopIte
           )}
           {view === 'skills' && (
             <SkillsClient
+              key={currentPlayer.equipped_skills?.join(',') ?? ''}
               player={currentPlayer}
               onBack={goBack}
               onPlayerUpdate={(updated) => {
